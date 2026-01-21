@@ -1,0 +1,301 @@
+# Avalon Mini 3 Tools
+
+Open-source CLI tools for Avalon Mini 3 Bitcoin miners. No vendor app required.
+
+> **WARNING**: Use at your own risk. These tools can damage hardware if misused. No responsibility for bricked devices, fires, or lost coins.
+
+## Why Use This?
+
+**Ditch the vendor app.** These tools give you direct control over your miner via the CGMiner API:
+
+- **No cloud, no account** — Your miner, your network, your data
+- **Scriptable** — Automate monitoring, alerts, pool switching
+- **Fleet management** — Control multiple miners from one terminal
+- **SSH-friendly** — Manage miners remotely without web UI access
+- **Password recovery** — Forgot your password? Recover it locally
+- **Tuning** — Experiment with voltage/frequency (at your own risk)
+
+## Quick Start
+
+```bash
+git clone https://github.com/youruser/mini3.git
+cd mini3
+
+# Check miner status
+python3 mini3.py -H 192.168.1.100 status
+
+# Live monitoring
+python3 mini3.py -H 192.168.1.100 watch
+```
+
+No dependencies. Python 3.8+.
+
+## Use Cases
+
+### Monitor Your Miner From Anywhere
+
+SSH into your network and check status without touching a web browser:
+
+```bash
+$ python3 mini3.py -H 192.168.1.100 status
+
+  Avalon Mini3 @ 192.168.1.100
+  DNA: 0201000046d3803b  MAC: e0e1a93ed589
+
+  Hashrate   40.12 TH/s (max 40.88)
+  Errors     2.1% reject, 0 HW
+  Temp       63C (max 75C)
+  Fan        3000 RPM (100%)
+  Power      1215W in, 750W out (30.3 J/TH)
+  Freq       492 MHz @ 2109 mV
+  Mode       Mining (level 0)
+  Uptime     2h 15m
+```
+
+### Automate Pool Switching
+
+Switch pools based on profitability with a cron job:
+
+```bash
+# Switch to pool 1 during off-peak hours
+0 22 * * * python3 /path/to/mini3.py -H 192.168.1.100 switchpool 1
+0 6 * * * python3 /path/to/mini3.py -H 192.168.1.100 switchpool 0
+```
+
+### Build Monitoring Dashboards
+
+Pipe status to your monitoring stack:
+
+```bash
+# JSON output for parsing
+python3 mini3.py -H 192.168.1.100 raw stats | jq '.STATS[0]'
+
+# Simple alerting
+hashrate=$(python3 mini3.py -H 192.168.1.100 raw summary | jq -r '.SUMMARY[0]."MHS av"')
+if (( $(echo "$hashrate < 30000000" | bc -l) )); then
+  echo "Low hashrate alert!" | mail -s "Miner Alert" you@email.com
+fi
+```
+
+### Recover Forgotten Passwords
+
+Locked out of the web UI? Recover your password locally:
+
+```bash
+# Try common passwords
+python3 password.py -d 192.168.1.100 -w common-passwords.txt
+
+# Know the pattern? Use mask attack
+python3 password.py -d 192.168.1.100 --mask "admin?d?d?d?d"
+
+# Brute force (up to 6 chars practical)
+python3 password.py -d 192.168.1.100 --bruteforce --max-len 6
+```
+
+~17M passwords/sec on Apple M4. 6-char alphanumeric takes ~1 hour.
+
+### Fleet Management
+
+Control multiple miners with a single command — no shell loops required:
+
+```bash
+# Check all miners (comma-separated)
+$ python3 mini3.py -H 192.168.1.100,192.168.1.101,192.168.1.102 status
+
+HOST             HASHRATE   TEMP   FAN  POWER   M  UPTIME
+----------------------------------------------------------------------
+192.168.1.100      40.1 TH/s   63C  100%  1215W   M  2h 15m
+192.168.1.101      39.8 TH/s   61C  100%  1210W   M  5h 30m
+192.168.1.102        OFFLINE
+
+# Or use a hosts file (one IP per line)
+$ cat miners.txt
+192.168.1.100
+192.168.1.101
+192.168.1.102
+# Comments are ignored
+
+$ python3 mini3.py -H miners.txt status
+
+# Reboot entire fleet
+$ python3 mini3.py -H miners.txt reboot
+
+# Set all fans to 100%
+$ python3 mini3.py -H miners.txt fan 100
+
+# Control parallelism (default: 10 concurrent connections)
+$ python3 mini3.py -H miners.txt -j 20 status
+```
+
+Commands execute in parallel across all hosts with results displayed in order.
+
+### Use as Space Heater
+
+The Mini 3 has a heater mode. Script seasonal switching:
+
+```bash
+# Winter mode: heat the room
+python3 mini3.py -H 192.168.1.100 mode 0  # Heater mode
+
+# Summer mode: mine efficiently
+python3 mini3.py -H 192.168.1.100 mode 1  # Mining mode
+python3 mini3.py -H 192.168.1.100 fan 100
+```
+
+## Commands
+
+### mini3.py — Device Control
+
+```bash
+# Status & Monitoring
+mini3.py -H IP status          # Full status
+mini3.py -H IP pools           # List pools
+mini3.py -H IP watch           # Live monitoring
+
+# Control
+mini3.py -H IP reboot          # Reboot
+mini3.py -H IP fan 80          # Fan speed (15-100 or 'auto')
+mini3.py -H IP freq 500        # Frequency (MHz)
+mini3.py -H IP mode 1          # Mode (0=Heater, 1=Mining, 2=Night)
+
+# Pool Management
+mini3.py -H IP switchpool 0    # Switch active pool
+mini3.py -H IP enablepool 1    # Enable pool
+mini3.py -H IP disablepool 2   # Disable pool
+
+# Authentication
+mini3.py -H IP auth PASSWORD   # Authenticate to web UI
+mini3.py -H IP getauth         # Get hash for password recovery
+
+# Advanced
+mini3.py -H IP raw COMMAND     # Raw CGMiner API command
+mini3.py -H IP ascset "0,..."  # Raw ascset command
+mini3.py -H IP ascset-help     # List all ascset commands
+```
+
+### password.py — Password Recovery
+
+```bash
+password.py -d IP -w wordlist.txt           # Dictionary attack
+password.py -d IP -w words.txt --rules      # With mutations (l33t, case, etc.)
+password.py -d IP -w words.txt --hybrid 4   # Wordlist + 4-char suffix bruteforce
+password.py -d IP --mask "admin?d?d?d"      # Pattern attack
+password.py -d IP --bruteforce --max-len 6  # Full bruteforce
+```
+
+Mask characters: `?l`=lowercase `?u`=uppercase `?d`=digit `?s`=special `?a`=all `?w`=alphanumeric
+
+### tune.py — Frequency Tuning
+
+Automated frequency sweep to find optimal settings:
+
+```bash
+python3 tune.py 192.168.1.100
+```
+
+## Advanced: ascset Commands
+
+Direct hardware control via `ascset`. **Can brick your device.**
+
+### Common Commands
+
+| Command | Format | Notes |
+|---------|--------|-------|
+| voltage | `0,voltage,2100` | 1700-2200 mV |
+| frequency | `0,frequency,500:500:500:500` | 4 PLL values (MHz) |
+| workmode | `0,workmode,set,1` | 0=Heater, 1=Mining, 2=Night |
+| worklevel | `0,worklevel,set,0` | Performance level |
+| fan-spd | `0,fan-spd,80` | 15-100%, or -1 for auto |
+| reboot | `0,reboot,1` | Reboot device |
+| softon/softoff | `0,softon` | Soft power control |
+
+### Display
+
+| Command | Format | Notes |
+|---------|--------|-------|
+| lcd | `0,lcd,4:MODE` | Display mode (1=Scroll, 2=Time, 3=Custom) |
+| nightlamp | `0,nightlamp,X` | Night lamp mode |
+
+### Factory & Advanced
+
+| Command | Format | Notes |
+|---------|--------|-------|
+| facopts | `0,facopts,X` | Factory options (locked) |
+| faclock | `0,faclock,X` | Factory lock status |
+| volt-adjust-switch | `0,volt-adjust-switch,X` | Voltage adjustment toggle |
+| limittemp | `0,limittemp,X` | Temperature limit |
+| hash-sn-read | `0,hash-sn-read` | Read hash board serial |
+| hash-sn-write | `0,hash-sn-write,X` | Write hash board serial |
+| filter-clean | `0,filter-clean` | Filter cleaning mode |
+| password | `0,password,old,new` | Change web password |
+| qr_auth | `0,qr_auth,auth,verify` | QR authentication |
+
+Full list: `mini3.py -H IP ascset-help`
+
+## Tuning Notes
+
+Use `tune.py` to experiment with voltage/frequency settings.
+
+**Our testing (stock cooling):**
+- Factory defaults (492 MHz / 2109 mV) performed best
+- Overclocking increased reject rate faster than hashrate gains
+- Undervolting caused immediate instability
+
+Results vary with cooling, immersion, or silicon lottery. Keep `Errors` under 3%.
+
+## Security Warning
+
+The CGMiner API on port 4028 has **no authentication**. Anyone on your network can:
+
+- Reboot the device
+- Change settings (fan, frequency, voltage)
+- Switch mining pools
+- Read pool credentials
+
+**Recommendations:**
+- Isolate miners on a dedicated VLAN
+- Firewall port 4028 from untrusted networks
+- Use a strong web UI password
+
+## Technical Details
+
+### Authentication Algorithm
+
+Reverse-engineered from firmware:
+
+```python
+import hashlib
+
+def compute_auth(password: str, dna: str) -> str:
+    """Compute web UI auth token."""
+    webpass = hashlib.sha256(password.encode()).hexdigest()
+    return hashlib.sha256((webpass[:8] + dna).encode()).hexdigest()[:8]
+
+# DNA = device identifier from CGMiner stats
+# Session cookie = auth + webpass[:24]
+```
+
+### CGMiner API
+
+Standard CGMiner JSON API on TCP port 4028. Commands are JSON with null terminator:
+
+```python
+import socket, json
+
+def cgminer_cmd(host, command, param=None):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((host, 4028))
+    req = {"command": command}
+    if param:
+        req["parameter"] = param
+    sock.send(json.dumps(req).encode() + b'\x00')
+    return json.loads(sock.recv(65536).decode().rstrip('\x00'))
+```
+
+## License
+
+MIT
+
+## Contributing
+
+Issues and PRs welcome. Test on your own hardware before submitting.
