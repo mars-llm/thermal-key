@@ -5,21 +5,21 @@
 <h1 align="center">Thermal Key</h1>
 
 <p align="center">
-  <strong>Open-source CLI tools for Avalon Mini 3 Bitcoin miners</strong><br>
+  <strong>Open-source CLI tools for <a href="https://bitcoinbrabant.com/en/product/avalon-mini-3-home-bitcoin-miner/">Avalon Mini 3</a> Bitcoin miners</strong><br>
   No vendor app. No cloud.
 </p>
 
 <p align="center">
-  <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_Start-blue?style=for-the-badge" alt="Quick Start"></a>
-  <a href="#fleet-management"><img src="https://img.shields.io/badge/Fleet_Management-green?style=for-the-badge" alt="Fleet Management"></a>
+  <em>Control, monitor, and automate your Canaan Avalon Mini 3 ASIC miner from any terminal.</em>
+</p>
+
+<p align="center">
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_Start-blue?style=flat-square" alt="Quick Start"></a>
+  <a href="#fleet-management"><img src="https://img.shields.io/badge/Fleet_Management-green?style=flat-square" alt="Fleet Management"></a>
   <img src="https://img.shields.io/badge/python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="MIT License">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey?style=flat-square" alt="Platform">
 </p>
-
----
-
-> **WARNING**: Miners can overheat or get damaged by wrong settings if misused. No responsibility for bricked devices, fires, or lost coins.
 
 ---
 
@@ -50,9 +50,13 @@
 </tr>
 </table>
 
+> **WARNING**: Miners can overheat or get damaged by wrong settings if misused. No responsibility for bricked devices, fires, or lost coins.
+
 ---
 
 ## Quick Start
+
+> **You'll need:** Python 3.8+ and your miner's IP address (check your router or the miner's LCD screen)
 
 ```bash
 git clone https://github.com/mars-llm/thermal-key.git
@@ -62,7 +66,7 @@ python3 mini3.py -H 192.168.1.100 status   # Check miner status
 python3 mini3.py -H 192.168.1.100 watch    # Live monitoring
 ```
 
-> **Requirements:** Python 3.8+ — No external dependencies
+No external dependencies required.
 
 ---
 
@@ -206,7 +210,7 @@ Automated frequency sweep to find optimal settings:
 python3 tune.py 192.168.1.100
 ```
 
-**Results from ur testing (stock cooling):**
+**Results from our testing (stock cooling):**
 - Factory defaults (492 MHz / 2109 mV) performed best
 - Overclocking increased reject rate faster than hashrate gains
 - Undervolting caused immediate instability
@@ -313,6 +317,7 @@ MIT — See [LICENSE](LICENSE)
 
 <p align="center">
   <sub>Built for people who prefer terminals over apps</sub><br><br>
-  <sub>Avalon Mini 3 is a trademark of <a href="https://www.canaan.io">Canaan Inc.</a><br>
-  This project is not affiliated with or endorsed by Canaan.</sub>
+  <sub>Avalon Mini 3 is a trademark of <a href="https://www.canaan.io">Canaan Inc.</a>
+  Product link courtesy of <a href="https://bitcoinbrabant.com/en/product/avalon-mini-3-home-bitcoin-miner/">Bitcoin Brabant</a>.<br>
+  This project is not affiliated with or endorsed by Canaan or Bitcoin Brabant.</sub>
 </p>
