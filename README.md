@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="Thermal Key" width="480">
+  <img src="banner.png" alt="Thermal Key" width="480">
 </p>
 
 <h1 align="center">Thermal Key</h1>
