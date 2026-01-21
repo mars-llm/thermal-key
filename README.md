@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="banner.png" alt="Avalon Mini 3" width="600">
+  <img src="app.png" alt="Avalon Mini 3" width="600">
 </p>
 
 <p align="center">
