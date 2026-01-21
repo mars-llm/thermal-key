@@ -1,12 +1,8 @@
 <p align="center">
-  <img src="logo.png" alt="Thermal Key" width="180">
+  <img src="logo.png" alt="Thermal Key" width="480">
 </p>
 
 <h1 align="center">Thermal Key</h1>
-
-<p align="center">
-  <img src="mini.png" alt="Avalon Mini 3" width="480">
-</p>
 
 <p align="center">
   <strong>Open-source CLI tools for <a href="https://bitcoinbrabant.com/en/product/avalon-mini-3-home-bitcoin-miner/">Avalon Mini 3</a> Bitcoin miners</strong><br>
