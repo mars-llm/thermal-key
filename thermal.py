@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Avalon Mini 3 control tool via CGMiner API (port 4028)."""
+"""Thermal Key device control tool via CGMiner API (port 4028)."""
 
 import argparse
 import hashlib
@@ -20,6 +20,92 @@ MODE_NAMES = {0: "Heater", 1: "Mining", 2: "Night"}
 MODE_ABBREV = {0: "H", 1: "M", 2: "N"}
 
 
+def parse_mm_id0(mm: str) -> Dict:
+    """Parse MM ID0 stats payload into normalized metrics."""
+    def get(pattern, default="0"):
+        m = re.search(pattern, mm)
+        return m.group(1) if m else default
+
+    def get_field(key: str) -> Optional[str]:
+        match = re.search(re.escape(key) + r"\[([^\]]+)\]", mm)
+        return match.group(1) if match else None
+
+    def parse_number(text: Optional[str], default: Optional[float] = None) -> Optional[float]:
+        if text is None:
+            return default
+        m = re.search(r"-?\d+(?:\.\d+)?", text)
+        return float(m.group(0)) if m else default
+
+    def parse_int(text: Optional[str], default: int = 0) -> int:
+        value = parse_number(text, None)
+        if value is None:
+            return default
+        return int(value)
+
+    def select_temp(keys: List[str]) -> int:
+        for key in keys:
+            value = parse_number(get_field(key), None)
+            if value is None:
+                continue
+            if -40 <= value <= 200:
+                return int(value)
+        return 0
+
+    power_in, power_out = 0, 0
+    ps = get_field("PS")
+    if ps:
+        parts = [int(p) for p in re.findall(r"-?\d+", ps)]
+        if len(parts) > 4:
+            power_in, power_out = parts[1], parts[4]
+
+    # Get SF0 base frequency (actual set value) - SF0[600 618 639 660]
+    freq = 0
+    sf0 = get_field("SF0")
+    if sf0:
+        parts = sf0.split()
+        if parts:
+            freq = int(float(parts[0]))
+    if not freq:
+        freq = parse_int(get_field("Freq"), 0)
+
+    # GHSmm = theoretical (chip capability), GHSavg = actual (submitted work)
+    # ATA1[power-temp-voltage-freq-?] - extract voltage (3rd field)
+    voltage = 0
+    ata = get_field("ATA1")
+    if ata:
+        parts = ata.split('-')
+        if len(parts) >= 3:
+            try:
+                voltage = int(float(parts[2]))
+            except ValueError:
+                voltage = 0
+
+    temp = select_temp(["HBTemp", "OTemp", "TAvg", "MTavg", "TarT", "ITemp"])
+    temp_max = select_temp(["TMax", "MTmax"])
+    worklevel = parse_int(get(r'WORKLVL\[(\d+)\]', None), 0)
+    if worklevel == 0:
+        worklevel = parse_int(get(r'WORKLEVEL\[(\d+)\]', None), 0)
+
+    return {
+        "hashrate": float(get(r'GHSavg\[([0-9.]+)\]')) / 1000,
+        "hashrate_max": float(get(r'GHSmm\[([0-9.]+)\]')) / 1000,
+        "uptime": int(get(r'Elapsed\[(\d+)\]')),
+        "temp": temp,
+        "temp_max": temp_max,
+        "fan_rpm": parse_int(get_field("Fan1"), 0),
+        "fan_pct": parse_int(get_field("FanR"), 0),
+        "freq": freq,
+        "voltage": voltage,
+        "power_in": power_in,
+        "power_out": power_out,
+        "workmode": int(get(r'WORKMODE\[(\d+)\]', "1")),
+        "worklevel": worklevel,
+        "hw_errors": int(get(r'HW\[(\d+)\]')),
+        "dh_rate": float(get(r'DH\[([0-9.]+)%?\]', "0")),
+        "dna": get(r'DNA\[([0-9a-fA-F]+)\]', '').lower(),
+    }
+
+
 class Miner:
     """CGMiner API client."""
 
@@ -31,6 +117,7 @@ class Miner:
 
     def cmd(self, command: str, param: str = None) -> Optional[Dict]:
         """Send command to CGMiner API."""
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.timeout)
@@ -54,7 +141,6 @@ class Miner:
                 except socket.timeout:
                     break
 
-            sock.close()
             return json.loads(response.rstrip(b'\x00').decode())
 
         except ConnectionRefusedError:
@@ -63,6 +149,12 @@ class Miner:
             print("error: connection timeout", file=sys.stderr)
         except Exception as e:
             print(f"error: {e}", file=sys.stderr)
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
         return None
 
     def ascset(self, param: str) -> Optional[Dict]:
@@ -77,9 +169,9 @@ class Miner:
         for stat in stats["STATS"]:
             if "MM ID0" not in stat:
                 continue
-            match = re.search(r'DNA\[([0-9a-f]+)\]', stat["MM ID0"])
+            match = re.search(r'DNA\[([0-9a-fA-F]+)\]', stat["MM ID0"])
             if match:
-                self._dna = match.group(1)
+                self._dna = match.group(1).lower()
                 return self._dna
         return None
 
@@ -92,54 +184,7 @@ class Miner:
         for stat in stats["STATS"]:
             if "MM ID0" not in stat:
                 continue
-            mm = stat["MM ID0"]
-
-            def get(pattern, default="0"):
-                m = re.search(pattern, mm)
-                return m.group(1) if m else default
-
-            power_in, power_out = 0, 0
-            ps = re.search(r'PS\[([^\]]+)\]', mm)
-            if ps:
-                parts = ps.group(1).split()
-                if len(parts) > 4:
-                    power_in, power_out = int(parts[1]), int(parts[4])
-
-            # Get SF0 base frequency (actual set value) - SF0[600 618 639 660]
-            freq = 0
-            sf0 = re.search(r'SF0\[([^\]]+)\]', mm)
-            if sf0:
-                parts = sf0.group(1).split()
-                if parts:
-                    freq = int(parts[0])
-
-            # GHSmm = theoretical (chip capability), GHSavg = actual (submitted work)
-            # ATA1[power-temp-voltage-freq-?] - extract voltage (3rd field)
-            voltage = 0
-            ata = re.search(r'ATA1\[([^\]]+)\]', mm)
-            if ata:
-                parts = ata.group(1).split('-')
-                if len(parts) >= 3:
-                    voltage = int(parts[2])
-
-            return {
-                "hashrate": float(get(r'GHSavg\[([0-9.]+)\]')) / 1000,
-                "hashrate_max": float(get(r'GHSmm\[([0-9.]+)\]')) / 1000,
-                "uptime": int(get(r'Elapsed\[(\d+)\]')),
-                "temp": int(get(r'HBTemp\[(\d+)\]')),
-                "temp_max": int(get(r'TMax\[(\d+)\]')),
-                "fan_rpm": int(get(r'Fan1\[(\d+)\]')),
-                "fan_pct": int(get(r'FanR\[(\d+)%?\]')),
-                "freq": freq,
-                "voltage": voltage,
-                "power_in": power_in,
-                "power_out": power_out,
-                "workmode": int(get(r'WORKMODE\[(\d+)\]', "1")),
-                "worklevel": int(get(r'WORKLVL\[(\d+)\]', "0")),
-                "hw_errors": int(get(r'HW\[(\d+)\]')),
-                "dh_rate": float(get(r'DH\[([0-9.]+)%?\]', "0")),
-                "dna": get(r'DNA\[([0-9a-f]+)\]', ''),
-            }
+            return parse_mm_id0(stat["MM ID0"])
         return {}
 
     def compute_auth(self, password: str) -> Dict[str, str]:
@@ -240,18 +285,21 @@ def do_status(m: Miner, args, compact: bool = False):
             print(f"{m.host:<16} CONNECTED (no stats)")
         return
 
-    print(f"\n  {ver.get('PROD', 'Avalon Mini 3')} @ {m.host}")
+    print(f"\n  {ver.get('PROD', 'Avalon Miner')} @ {m.host}")
     print(f"  DNA: {ver.get('DNA', 'N/A')}  MAC: {ver.get('MAC', 'N/A')}")
     print(f"  FW: {ver.get('LVERSION', 'N/A')}  CGMiner: {ver.get('CGMiner', 'N/A')}")
 
     if stats:
-        efficiency = stats['power_in'] / stats['hashrate'] if stats['hashrate'] > 0 else 0
+        efficiency = None
+        if stats['hashrate'] > 0 and stats['power_in'] > 0:
+            efficiency = stats['power_in'] / stats['hashrate']
         print()
         print(f"  Hashrate   {stats['hashrate']:.2f} TH/s (max {stats['hashrate_max']:.2f})")
         print(f"  Errors     {stats['dh_rate']:.1f}% reject, {stats['hw_errors']} HW")
         print(f"  Temp       {stats['temp']}C (max {stats['temp_max']}C)")
         print(f"  Fan        {stats['fan_rpm']} RPM ({stats['fan_pct']}%)")
-        print(f"  Power      {stats['power_in']}W in, {stats['power_out']}W out ({efficiency:.1f} J/TH)")
+        eff_str = f"{efficiency:.1f} J/TH" if efficiency is not None else "N/A"
+        print(f"  Power      {stats['power_in']}W in, {stats['power_out']}W out ({eff_str})")
         print(f"  Freq       {stats['freq']:.0f} MHz @ {stats['voltage']} mV")
         print(f"  Mode       {MODE_NAMES.get(stats['workmode'], '?')} (level {stats['worklevel']})")
         print(f"  Uptime     {fmt_uptime(stats['uptime'])}")
@@ -390,9 +438,10 @@ def do_help_ascset(m: Miner, args):
 
 
 def main():
+    prog = os.path.basename(sys.argv[0]) if sys.argv else 'thermal'
     parser = argparse.ArgumentParser(
-        prog='mini3',
-        description='Avalon Mini 3 control tool',
+        prog=prog,
+        description='Thermal Key control tool (Avalon Mini 3 / Nano 3S)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
@@ -418,15 +467,15 @@ Commands:
   ascset-help         List ascset commands
 
 Examples:
-  mini3 -H 192.168.1.100 status
-  mini3 -H 192.168.1.100 fan 80
-  mini3 -H 192.168.1.100 mode 1
-  mini3 -H 192.168.1.100 auth mypassword
+  thermal -H 192.168.1.100 status
+  thermal -H 192.168.1.100 fan 80
+  thermal -H 192.168.1.100 mode 1
+  thermal -H 192.168.1.100 auth mypassword
 
 Fleet management (multiple hosts):
-  mini3 -H 192.168.1.100,192.168.1.101,192.168.1.102 status
-  mini3 -H miners.txt reboot
-  mini3 -H miners.txt fan 100
+  thermal -H 192.168.1.100,192.168.1.101,192.168.1.102 status
+  thermal -H miners.txt reboot
+  thermal -H miners.txt fan 100
 """)
 
     parser.add_argument('-H', '--host', metavar='IP', help='Miner IP(s): single, comma-separated, or file path')

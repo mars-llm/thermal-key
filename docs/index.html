@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Thermal Key — Local control for Avalon Mini 3 & Nano 3S</title>
+  <meta name="description" content="Thermal Key is a local-first CLI for controlling Avalon Mini 3 and Nano 3S miners. Monitor, automate, and integrate with your smart home." />
+  <meta name="keywords" content="Avalon Mini 3, Avalon Nano 3S, CGMiner, Bitcoin miner, CLI, local control, home automation, Home Assistant, thermal key" />
+  <meta name="author" content="Thermal Key" />
+  <link rel="canonical" href="https://mars-llm.github.io/thermal-key/" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Thermal Key" />
+  <meta property="og:title" content="Thermal Key — Local control for Avalon Mini 3 & Nano 3S" />
+  <meta property="og:description" content="Local-first CLI for monitoring, automation, and fleet management. No cloud. No vendor app." />
+  <meta property="og:url" content="https://mars-llm.github.io/thermal-key/" />
+  <meta property="og:image" content="https://mars-llm.github.io/thermal-key/assets/thermal-key.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Thermal Key — Local control for Avalon Mini 3 & Nano 3S" />
+  <meta name="twitter:description" content="Local-first CLI for monitoring, automation, and fleet management. No cloud. No vendor app." />
+  <meta name="twitter:image" content="https://mars-llm.github.io/thermal-key/assets/thermal-key.png" />
+  <meta name="theme-color" content="#ff8b3d" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f1216;
+      --bg-soft: #151a20;
+      --ink: #edf2f7;
+      --muted: #aeb6c2;
+      --accent: #ff8b3d;
+      --accent-2: #3ad1c4;
+      --stroke: rgba(255, 255, 255, 0.08);
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, rgba(58, 209, 196, 0.16), transparent 60%),
+                  radial-gradient(1000px 520px at 90% 10%, rgba(255, 139, 61, 0.18), transparent 60%),
+                  var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 28px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .nav a {
+      color: var(--muted);
+      text-decoration: none;
+      margin-left: 18px;
+      font-size: 14px;
+      transition: color 0.2s ease;
+    }
+
+    .nav a:hover { color: var(--ink); }
+    .nav a:focus-visible {
+      outline: 2px solid var(--accent-2);
+      outline-offset: 4px;
+      border-radius: 8px;
+    }
+
+    .hero {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 40px 24px 24px;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 32px;
+      align-items: center;
+      animation: rise 0.9s ease-out forwards;
+      opacity: 0;
+      transform: translateY(14px);
+    }
+
+    h1 {
+      font-size: clamp(32px, 4vw, 54px);
+      line-height: 1.05;
+      margin: 0 0 14px;
+    }
+
+    .hero p {
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.6;
+      margin: 0 0 26px;
+    }
+
+    .cta {
+      display: inline-flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 18px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      text-decoration: none;
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.04);
+      transition: transform 0.2s ease, border 0.2s ease;
+    }
+
+    .button.primary {
+      background: linear-gradient(120deg, var(--accent), #ffb347);
+      color: #1b120d;
+      border: none;
+      font-weight: 600;
+    }
+
+    .button:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .button:focus-visible {
+      outline: 2px solid var(--accent-2);
+      outline-offset: 4px;
+      border-color: transparent;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .tag {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--stroke);
+    }
+
+    .hero-card {
+      background: rgba(20, 24, 30, 0.8);
+      border: 1px solid var(--stroke);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card img {
+      width: 100%;
+      border-radius: 12px;
+      display: block;
+    }
+
+    .proof {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 10px 24px 24px;
+    }
+
+    .proof-title {
+      margin: 0 0 14px;
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .proof-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+    }
+
+    .proof-item {
+      border: 1px solid var(--stroke);
+      border-radius: 999px;
+      padding: 10px 14px;
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-size: 11px;
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .section {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      gap: 20px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+
+    .card {
+      background: var(--bg-soft);
+      border: 1px solid var(--stroke);
+      border-radius: 16px;
+      padding: 20px;
+      min-height: 170px;
+      position: relative;
+      overflow: hidden;
+      animation: float 1s ease-out forwards;
+    }
+
+    .card h3 { margin: 0 0 10px; }
+    .card p { margin: 0; color: var(--muted); }
+
+    .card::after {
+      content: "";
+      position: absolute;
+      inset: auto -30% -60% -30%;
+      height: 60%;
+      background: radial-gradient(circle at 30% 20%, rgba(58, 209, 196, 0.18), transparent 60%);
+      opacity: 0.6;
+    }
+
+    .code {
+      font-family: "IBM Plex Mono", monospace;
+      background: #0b0e12;
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      padding: 16px 18px;
+      color: #cde7e4;
+      box-shadow: inset 0 0 0 1px rgba(58, 209, 196, 0.08);
+    }
+
+    .code pre {
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    .footer {
+      text-align: center;
+      padding: 40px 16px 60px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @keyframes rise {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes float {
+      from {
+        transform: translateY(10px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+      header {
+        flex-direction: column;
+        gap: 10px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+      .hero,
+      .card {
+        animation: none !important;
+        transform: none !important;
+        opacity: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">Thermal Key</div>
+    <nav class="nav">
+      <a href="#features">Features</a>
+      <a href="#quickstart">Quick Start</a>
+      <a href="#safety">Safety</a>
+      <a href="https://github.com/mars-llm/thermal-key">GitHub</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div>
+      <h1>Local-first control for Avalon Mini 3 & Nano 3S.</h1>
+      <p>Thermal Key is a CLI toolkit for monitoring, automation, and fleet management. No vendor app. No cloud. Just fast, scriptable control over your miners.</p>
+      <div class="cta">
+        <a class="button primary" href="https://github.com/mars-llm/thermal-key">Get the CLI</a>
+        <a class="button" href="#quickstart">Quick Start</a>
+      </div>
+      <div class="tag-row">
+        <span class="tag">100% Local</span>
+        <span class="tag">Fleet Ready</span>
+        <span class="tag">Mini 3 + Nano 3S</span>
+      </div>
+    </div>
+    <div class="hero-card">
+      <img src="assets/thermal-key.png" alt="Thermal Key CLI screenshot" />
+    </div>
+  </section>
+
+  <section class="proof">
+    <p class="proof-title">Built for real hardware</p>
+    <div class="proof-grid">
+      <div class="proof-item">Open-source CLI</div>
+      <div class="proof-item">Local-first workflow</div>
+      <div class="proof-item">MIT licensed</div>
+      <div class="proof-item">Mini 3 + Nano 3S</div>
+    </div>
+  </section>
+
+  <section id="features" class="section">
+    <div class="grid">
+      <div class="card">
+        <h3>Real-time status</h3>
+        <p>Fast status calls with hashrate, temperature, fan, power, and uptime for single devices or fleets.</p>
+      </div>
+      <div class="card">
+        <h3>Automation ready</h3>
+        <p>Script pool switching, heater modes, and fan policies using cron, Home Assistant, or your own tooling.</p>
+      </div>
+      <div class="card">
+        <h3>Safe by design</h3>
+        <p>Transparent commands, no hidden cloud account, and built-in warnings for risky operations.</p>
+      </div>
+      <div class="card">
+        <h3>Mini 3 + Nano 3S</h3>
+        <p>Unified parsing and device-aware commands for both models so you can manage mixed fleets.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="quickstart" class="section">
+    <h2>Quick Start</h2>
+    <div class="code">
+      <pre>git clone https://github.com/mars-llm/thermal-key.git
+cd thermal-key
+
+python3 thermal.py -H 192.168.1.100 status
+python3 thermal.py -H 192.168.1.100 watch</pre>
+    </div>
+  </section>
+
+  <section id="safety" class="section">
+    <h2>Safety</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Heat is real</h3>
+        <p>Miners can overheat or be damaged with incorrect settings. Use conservative limits and monitor temps.</p>
+      </div>
+      <div class="card">
+        <h3>Network control</h3>
+        <p>CGMiner on port 4028 is unauthenticated. Use VLANs or firewall rules to keep your network safe.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    Built for people who prefer terminals over apps. MIT licensed.
+  </footer>
+</body>
+</html>

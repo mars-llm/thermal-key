@@ -1,6 +1,9 @@
 # Archive - large binaries and reference materials
 archive/
 
+# Local reports and tuning outputs
+reports/
+
 # K230 flash tooling (firmware dumping)
 k230/
 
@@ -47,6 +50,9 @@ ENV/
 
 # Claude Code
 .claude/
+
+# Local documentation drafts
+doc/
 
 # Generated output
 jailbreak_results_*.json

@@ -1,16 +1,16 @@
 <h1 align="center">Thermal Key</h1>
 
 <p align="center">
-  <strong>Open-source CLI tools for <a href="https://bitcoinbrabant.com/en/product/avalon-mini-3-home-bitcoin-miner/">Avalon Mini 3</a> Bitcoin miners</strong><br>
+  <strong>Open-source CLI tools for Avalon Mini 3 & Nano 3S Bitcoin miners</strong><br>
   No vendor app. No cloud.
 </p>
 
 <p align="center">
-  <img src="app.png" alt="Avalon Mini 3" width="600">
+  <img src="thermal-key.png" alt="Thermal Key CLI" width="600">
 </p>
 
 <p align="center">
-  <em>Control, monitor, and automate your Canaan Avalon Mini 3 ASIC miner from any terminal.</em>
+  <em>Control, monitor, and automate your Canaan Avalon Mini 3 / Nano 3S ASIC miner from any terminal.</em>
 </p>
 
 <p align="center">
@@ -62,8 +62,8 @@
 git clone https://github.com/mars-llm/thermal-key.git
 cd thermal-key
 
-python3 mini3.py -H 192.168.1.100 status   # Check miner status
-python3 mini3.py -H 192.168.1.100 watch    # Live monitoring
+python3 thermal.py -H 192.168.1.100 status   # Check miner status
+python3 thermal.py -H 192.168.1.100 watch    # Live monitoring
 ```
 
 No external dependencies required.
@@ -79,7 +79,7 @@ No external dependencies required.
 ### Real-Time Monitoring
 
 ```
-$ python3 mini3.py -H 192.168.1.100 status
+$ python3 thermal.py -H 192.168.1.100 status
 
   Avalon Mini3 @ 192.168.1.100
   DNA: 0201000046d3803b
@@ -104,7 +104,7 @@ $ python3 mini3.py -H 192.168.1.100 status
 Control your entire mining operation from one terminal:
 
 ```
-$ python3 mini3.py -H 192.168.1.100,192.168.1.101,192.168.1.102 status
+$ python3 thermal.py -H 192.168.1.100,192.168.1.101,192.168.1.102 status
 
 HOST             HASHRATE   TEMP   FAN  POWER   M  UPTIME
 ----------------------------------------------------------------------
@@ -115,10 +115,10 @@ HOST             HASHRATE   TEMP   FAN  POWER   M  UPTIME
 
 ```bash
 # Use a hosts file (one IP per line)
-python3 mini3.py -H miners.txt status       # Check all miners
-python3 mini3.py -H miners.txt reboot       # Reboot entire fleet
-python3 mini3.py -H miners.txt fan 100      # Max fans everywhere
-python3 mini3.py -H miners.txt -j 20 status # 20 parallel connections
+python3 thermal.py -H miners.txt status       # Check all miners
+python3 thermal.py -H miners.txt reboot       # Reboot entire fleet
+python3 thermal.py -H miners.txt fan 100      # Max fans everywhere
+python3 thermal.py -H miners.txt -j 20 status # 20 parallel connections
 ```
 
 ---
@@ -170,50 +170,34 @@ python3 password.py -d 192.168.1.100 --bruteforce --max-len 6
 ## Commands
 
 <details open>
-<summary><h3>mini3.py — Device Control</h3></summary>
+<summary><h3>thermal.py — Device Control</h3></summary>
 
 ```bash
 # Status & Monitoring
-mini3.py -H IP status          # Full status
-mini3.py -H IP pools           # List pools
-mini3.py -H IP watch           # Live monitoring
+thermal.py -H IP status          # Full status
+thermal.py -H IP pools           # List pools
+thermal.py -H IP watch           # Live monitoring
 
 # Control
-mini3.py -H IP reboot          # Reboot device
-mini3.py -H IP fan 80          # Fan speed (15-100 or 'auto')
-mini3.py -H IP freq 500        # Frequency in MHz
-mini3.py -H IP mode 1          # 0=Heater, 1=Mining, 2=Night
+thermal.py -H IP reboot          # Reboot device
+thermal.py -H IP fan 80          # Fan speed (15-100 or 'auto')
+thermal.py -H IP freq 500        # Frequency in MHz
+thermal.py -H IP mode 1          # 0=Heater, 1=Mining, 2=Night
 
 # Pool Management
-mini3.py -H IP switchpool 0    # Switch active pool
-mini3.py -H IP enablepool 1    # Enable pool
-mini3.py -H IP disablepool 2   # Disable pool
+thermal.py -H IP switchpool 0    # Switch active pool
+thermal.py -H IP enablepool 1    # Enable pool
+thermal.py -H IP disablepool 2   # Disable pool
 
 # Authentication
-mini3.py -H IP auth PASSWORD   # Authenticate to web UI
-mini3.py -H IP getauth         # Get hash for password recovery
+thermal.py -H IP auth PASSWORD   # Authenticate to web UI
+thermal.py -H IP getauth         # Get hash for password recovery
 
 # Advanced
-mini3.py -H IP raw COMMAND     # Raw CGMiner API command
-mini3.py -H IP ascset "0,..."  # Raw ascset command
-mini3.py -H IP ascset-help     # List all ascset options
+thermal.py -H IP raw COMMAND     # Raw CGMiner API command
+thermal.py -H IP ascset "0,..."  # Raw ascset command
+thermal.py -H IP ascset-help     # List all ascset options
 ```
-
-</details>
-
-<details>
-<summary><h3>tune.py — Frequency Tuning</h3></summary>
-
-Automated frequency sweep to find optimal settings:
-
-```bash
-python3 tune.py 192.168.1.100
-```
-
-**Results from our testing (stock cooling):**
-- Factory defaults (492 MHz / 2109 mV) performed best
-- Overclocking increased reject rate faster than hashrate gains
-- Undervolting caused immediate instability
 
 </details>
 
@@ -232,7 +216,7 @@ python3 tune.py 192.168.1.100
 | lcd | `0,lcd,4:MODE` | Display mode |
 | password | `0,password,old,new` | Change web password |
 
-Full list: `mini3.py -H IP ascset-help`
+Full list: `thermal.py -H IP ascset-help`
 
 </details>
 
@@ -242,18 +226,18 @@ Full list: `mini3.py -H IP ascset-help`
 
 ```bash
 # Pool switching via cron
-0 22 * * * python3 /path/to/mini3.py -H 192.168.1.100 switchpool 1
-0 6  * * * python3 /path/to/mini3.py -H 192.168.1.100 switchpool 0
+0 22 * * * python3 /path/to/thermal.py -H 192.168.1.100 switchpool 1
+0 6  * * * python3 /path/to/thermal.py -H 192.168.1.100 switchpool 0
 
 # Low hashrate alert
-hashrate=$(python3 mini3.py -H 192.168.1.100 raw summary | jq -r '.SUMMARY[0]."MHS av"')
+hashrate=$(python3 thermal.py -H 192.168.1.100 raw summary | jq -r '.SUMMARY[0]."MHS av"')
 if (( $(echo "$hashrate < 30000000" | bc -l) )); then
   echo "Low hashrate!" | mail -s "Alert" you@email.com
 fi
 
 # Seasonal heating
-python3 mini3.py -H 192.168.1.100 mode 0   # Winter: Heater mode
-python3 mini3.py -H 192.168.1.100 mode 1   # Summer: Mining mode
+python3 thermal.py -H 192.168.1.100 mode 0   # Winter: Heater mode
+python3 thermal.py -H 192.168.1.100 mode 1   # Summer: Mining mode
 ```
 
 ---
@@ -266,6 +250,29 @@ The CGMiner API on port 4028 has **no authentication**. Anyone on your network c
 - Isolate miners on a dedicated VLAN
 - Firewall port 4028 from untrusted networks
 - Use a strong web UI password
+
+---
+
+## Testing
+
+Run the full suite (unit + property + device integration):
+
+```bash
+./scripts/test.sh
+```
+
+If devices are offline, you can skip them:
+
+```bash
+TK_SKIP_OFFLINE=1 ./scripts/test.sh
+```
+
+---
+
+## Website
+
+The project homepage is published with GitHub Pages from the `docs/` folder:
+[https://mars-llm.github.io/thermal-key/](https://mars-llm.github.io/thermal-key/)
 
 ---
 
@@ -317,7 +324,7 @@ MIT — See [LICENSE](LICENSE)
 
 <p align="center">
   <sub>Built for people who prefer terminals over apps</sub><br><br>
-  <sub>Avalon Mini 3 is a trademark of <a href="https://www.canaan.io">Canaan Inc.</a>
+  <sub>Avalon Mini 3 and Avalon Nano 3S are trademarks of <a href="https://www.canaan.io">Canaan Inc.</a>
   Product link courtesy of <a href="https://bitcoinbrabant.com/en/product/avalon-mini-3-home-bitcoin-miner/">Bitcoin Brabant</a>.<br>
   This project is not affiliated with or endorsed by Canaan or Bitcoin Brabant.</sub>
 </p>
