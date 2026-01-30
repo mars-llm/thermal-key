@@ -51,6 +51,9 @@ ENV/
 # Claude Code
 .claude/
 
+# Codex
+.codex/
+
 # Local documentation drafts
 doc/
 
