@@ -69,16 +69,22 @@ def parse_mm_id0(mm: str) -> Dict:
         freq = parse_int(get_field("Freq"), 0)
 
     # GHSmm = theoretical (chip capability), GHSavg = actual (submitted work)
-    # ATA1[power-temp-voltage-freq-?] - extract voltage (3rd field)
+    # ATA1[power-temp-voltage-freq-?] - extract power (1st) and voltage (3rd)
     voltage = 0
+    ata_power = 0
     ata = get_field("ATA1")
     if ata:
         parts = ata.split('-')
         if len(parts) >= 3:
             try:
+                ata_power = int(float(parts[0]))
                 voltage = int(float(parts[2]))
             except ValueError:
-                voltage = 0
+                pass
+
+    # Use ATA1 power as fallback when PS reports zero (Nano 3S)
+    if power_in == 0 and ata_power > 0:
+        power_in = ata_power
 
     temp = select_temp(["HBTemp", "OTemp", "TAvg", "MTavg", "TarT", "ITemp"])
     temp_max = select_temp(["TMax", "MTmax"])
