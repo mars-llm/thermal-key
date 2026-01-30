@@ -577,13 +577,21 @@ Fleet management (multiple hosts):
         m = Miner(host, args.port)
         ver = m.cmd("version")
         if not ver or "VERSION" not in ver:
-            return f"{host:<16} OFFLINE"
+            return f"{host:<16} {'':>8}  OFFLINE"
+        prod = ver["VERSION"][0].get("PROD", "Unknown")
+        # Shorten device name: "AvalonMiner Nano3s-..." -> "Nano3s"
+        if "Nano3" in prod:
+            dev = "Nano3s"
+        elif "Mini3" in prod:
+            dev = "Mini3"
+        else:
+            dev = prod[:8]
         stats = m.parse_stats()
         if stats:
             mode = MODE_ABBREV.get(stats['workmode'], '?')
-            return (f"{host:<16} {stats['hashrate']:>6.1f} TH/s  {stats['temp']:>3}C  "
+            return (f"{host:<16} {dev:>8}  {stats['hashrate']:>6.1f} TH/s  {stats['temp']:>3}C  "
                     f"{stats['fan_pct']:>3}%  {stats['power_in']:>4}W  {mode}  {fmt_uptime(stats['uptime'])}")
-        return f"{host:<16} CONNECTED (no stats)"
+        return f"{host:<16} {dev:>8}  CONNECTED (no stats)"
 
     def run_command_on_host(host: str) -> str:
         """Run command on host and capture output."""
@@ -603,8 +611,8 @@ Fleet management (multiple hosts):
 
     if args.cmd == 'status':
         # Fleet status - parallel fetch, ordered output
-        print(f"\n{'HOST':<16} {'HASHRATE':>10}  {'TEMP':>4}  {'FAN':>4}  {'POWER':>5}  {'M':>2}  UPTIME")
-        print("-" * 70)
+        print(f"\n{'HOST':<16} {'TYPE':>8}  {'HASHRATE':>10}  {'TEMP':>4}  {'FAN':>4}  {'POWER':>5}  {'M':>2}  UPTIME")
+        print("-" * 80)
 
         results = {}
         with ThreadPoolExecutor(max_workers=args.parallel) as executor:

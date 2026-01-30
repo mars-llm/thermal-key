@@ -79,7 +79,7 @@ python3 thermal.py -H 192.168.1.100 watch
 ## Screenshots
 
 <p align="center">
-  <img src="docs/img/app.png" alt="Thermal Key CLI status output" width="820">
+  <img src="docs/img/console.png" alt="Thermal Key CLI status output" width="820">
 </p>
 
 ## Command highlights
