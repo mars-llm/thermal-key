@@ -49,6 +49,11 @@
 
     * { box-sizing: border-box; }
 
+    img {
+      max-width: 100%;
+      height: auto;
+    }
+
     body {
       margin: 0;
       font-family: "Atkinson Hyperlegible", system-ui, -apple-system, sans-serif;
@@ -206,6 +211,7 @@
       align-items: center;
       gap: 10px;
       padding: 12px 18px;
+      min-height: 44px;
       border-radius: 12px;
       border: 1px solid var(--stroke);
       text-decoration: none;
@@ -419,9 +425,55 @@
     }
 
     @media (max-width: 700px) {
-      nav { width: 100%; }
-      .hero { padding: 24px; }
+      header { padding: 22px 18px 8px; }
+      nav {
+        width: 100%;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        gap: 8px;
+        padding-bottom: 8px;
+        -webkit-overflow-scrolling: touch;
+      }
+      nav a {
+        font-size: 13px;
+        white-space: nowrap;
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 10px 14px;
+      }
+      nav::-webkit-scrollbar { display: none; }
+      main { padding: 6px 18px 64px; }
+      .hero { padding: 22px; }
+      .hero p { font-size: 16px; }
       .section { padding: 22px; }
+      .cta {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .cta .button {
+        justify-content: center;
+        width: 100%;
+      }
+      .stat-grid {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      }
+      .code { padding: 16px; }
+      .command code { font-size: 12px; }
+      .footer { padding: 16px 12px 6px; }
+    }
+
+    @media (max-width: 520px) {
+      .hero h1 { font-size: clamp(28px, 8vw, 36px); }
+      .pill-row { gap: 8px; }
+      .pill { font-size: 10px; padding: 6px 10px; }
+      .stat-grid { grid-template-columns: 1fr; }
+      .feature { min-height: unset; }
+      .code pre,
+      .command code {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
