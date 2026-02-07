@@ -1,7 +1,7 @@
 <h1 align="center">Thermal Key</h1>
 
 <p align="center">
-  <strong>Local-first CLI control for Avalon Mini 3 and Nano 3S miners</strong><br>
+  <strong>Local-first CLI control for Avalon Mini 3, Nano 3S, and Avalon Q miners</strong><br>
   Monitor, automate, and manage fleets without vendor apps or cloud logins.
 </p>
 
@@ -63,6 +63,7 @@
 
 - Avalon Mini 3
 - Avalon Nano 3S
+- Avalon Q
 
 ## Quick start
 
@@ -92,6 +93,12 @@ python3 thermal.py -H 192.168.1.100 watch
 | Fan | `thermal.py -H IP fan 80` | 15-100 or `auto` |
 | Mode | `thermal.py -H IP mode 1` | 0=Heater, 1=Mining, 2=Night |
 | Frequency | `thermal.py -H IP freq 500` | MHz setting |
+| Mode + level | `thermal.py -H IP work-mode-level 1 2` | Avalon Q combined control |
+| Voltage | `thermal.py -H IP voltage 2250` | Avalon Q PSU voltage (2150-2600 mV) |
+| Solo flag | `thermal.py -H IP solo on` | Avalon Q solo-allowed toggle |
+| Loop | `thermal.py -H IP loop` | Avalon Q loop readout |
+| Timezone | `thermal.py -H IP timezone` | Avalon Q firmware timezone |
+| Q runtime info | `thermal.py -H IP qinfo` | Avalon Q work mode, loop, and PSU info |
 | Pool switch | `thermal.py -H IP switchpool 0` | Activate pool index |
 | Auth | `thermal.py -H IP auth PASSWORD` | Web UI auth cookie |
 | Recovery | `thermal.py -H IP getauth` | Retrieve auth hash |

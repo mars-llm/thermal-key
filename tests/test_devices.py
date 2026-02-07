@@ -101,8 +101,9 @@ class DeviceIntegrationTests(unittest.TestCase):
     def test_stats_parsing(self):
         for host in HOSTS:
             with self.subTest(host=host):
-                miner, _ = self._require_online(host)
-                stats = miner.parse_stats()
+                miner, ver = self._require_online(host)
+                prod = ver.get("PROD") or ver.get("MODEL") or ver.get("Model")
+                stats = miner.parse_stats(thermal.device_key_from_product(prod), version_entry=ver)
                 if not stats:
                     raw = miner.cmd("stats") or {}
                     mm_ids = [s.get("MM ID0") for s in raw.get("STATS", []) if "MM ID0" in s]
@@ -139,9 +140,14 @@ class DeviceIntegrationTests(unittest.TestCase):
     def test_stats_parse_consistency_with_raw(self):
         for host in HOSTS:
             with self.subTest(host=host):
-                miner, _ = self._require_online(host)
+                miner, ver = self._require_online(host)
+                prod = (ver.get("PROD") or ver.get("MODEL") or "").lower()
                 raw = miner.cmd("stats") or {}
                 mm_list = [s.get("MM ID0") for s in raw.get("STATS", []) if "MM ID0" in s]
+                if "avalon q" in prod or prod.strip() == "q":
+                    if not mm_list:
+                        # Avalon Q firmware omits MM ID0; fallback parsing is validated in test_stats_parsing.
+                        continue
                 if not mm_list:
                     self.fail("stats missing MM ID0")
                 mm = mm_list[0]
@@ -202,6 +208,9 @@ class DeviceIntegrationTests(unittest.TestCase):
                 elif "mini3" in prod:
                     for required in ("smart-speed", "target-temp"):
                         self.assertIn(required, cmds, f"Mini3 missing {required}: {sorted(cmds)}")
+                elif "avalon q" in prod or prod.strip() == "q":
+                    for required in ("voltage", "solo-allowed", "work_mode_lvl", "time"):
+                        self.assertIn(required, cmds, f"Avalon Q missing {required}: {sorted(cmds)}")
 
 
 class DeviceWriteSmokeTests(unittest.TestCase):
@@ -232,7 +241,10 @@ class DeviceWriteSmokeTests(unittest.TestCase):
         for host in HOSTS:
             with self.subTest(host=host):
                 miner = self._require_online(host)
-                stats = miner.parse_stats()
+                ver = miner.cmd("version")
+                ver0 = ver["VERSION"][0] if ver and "VERSION" in ver and ver["VERSION"] else {}
+                prod = ver0.get("PROD") or ver0.get("MODEL") or ver0.get("Model")
+                stats = miner.parse_stats(thermal.device_key_from_product(prod), version_entry=ver0)
                 if not stats:
                     self.fail("parse_stats returned empty; cannot run write tests")
 

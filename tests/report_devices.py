@@ -42,6 +42,7 @@ def collect_host(host):
         "host": host,
         "port": PORT,
         "reachable": False,
+        "device_key": "unknown",
         "version": {},
         "summary": {},
         "stats_parsed": {},
@@ -57,6 +58,8 @@ def collect_host(host):
 
     entry["reachable"] = True
     entry["version"] = version["VERSION"][0]
+    prod = entry["version"].get("PROD") or entry["version"].get("MODEL") or entry["version"].get("Model")
+    entry["device_key"] = thermal.device_key_from_product(prod)
 
     summary = miner.cmd("summary")
     if summary and "SUMMARY" in summary and summary["SUMMARY"]:
@@ -64,7 +67,7 @@ def collect_host(host):
     else:
         entry["errors"].append("no summary response")
 
-    stats_parsed = miner.parse_stats()
+    stats_parsed = miner.parse_stats(entry["device_key"], version_entry=entry["version"])
     if stats_parsed:
         entry["stats_parsed"] = stats_parsed
     else:
@@ -83,7 +86,7 @@ def collect_host(host):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Emit JSON report for Avalon devices")
+    parser = argparse.ArgumentParser(description="Emit JSON report for Canaan Avalon devices")
     parser.add_argument("--out", help="Write JSON to file instead of stdout")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
     args = parser.parse_args()

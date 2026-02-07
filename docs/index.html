@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Thermal Key - Local control for Avalon Mini 3 and Nano 3S</title>
-  <meta name="description" content="Thermal Key is a local-first CLI for controlling Avalon Mini 3 and Nano 3S miners. Monitor, automate, and manage fleets without vendor apps or cloud logins." />
-  <meta name="keywords" content="Avalon Mini 3, Avalon Nano 3S, CGMiner, Bitcoin miner, CLI, local control, fleet management" />
+  <title>Thermal Key - Local control for Avalon Mini 3, Nano 3S, and Avalon Q</title>
+  <meta name="description" content="Thermal Key is a local-first CLI for controlling Avalon Mini 3, Nano 3S, and Avalon Q miners. Monitor, automate, and manage fleets without vendor apps or cloud logins." />
+  <meta name="keywords" content="Avalon Mini 3, Avalon Nano 3S, Avalon Q, CGMiner, Bitcoin miner, CLI, local control, fleet management" />
   <meta name="author" content="Thermal Key" />
   <link rel="canonical" href="https://mars-llm.github.io/thermal-key/" />
 
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Thermal Key" />
-  <meta property="og:title" content="Thermal Key - Local control for Avalon Mini 3 and Nano 3S" />
+  <meta property="og:title" content="Thermal Key - Local control for Avalon Mini 3, Nano 3S, and Avalon Q" />
   <meta property="og:description" content="Local-first CLI for monitoring, automation, and fleet management. No cloud. No vendor app." />
   <meta property="og:url" content="https://mars-llm.github.io/thermal-key/" />
   <meta property="og:image" content="https://mars-llm.github.io/thermal-key/img/thermal-key.png" />
@@ -19,7 +19,7 @@
   <meta property="og:image:height" content="630" />
 
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Thermal Key - Local control for Avalon Mini 3 and Nano 3S" />
+  <meta name="twitter:title" content="Thermal Key - Local control for Avalon Mini 3, Nano 3S, and Avalon Q" />
   <meta name="twitter:description" content="Local-first CLI for monitoring, automation, and fleet management. No cloud. No vendor app." />
   <meta name="twitter:image" content="https://mars-llm.github.io/thermal-key/img/thermal-key.png" />
   <meta name="theme-color" content="#2563eb" />
@@ -518,6 +518,7 @@
           <span class="pill">100% Local</span>
           <span class="pill">Fleet Ready</span>
           <span class="pill">Mini 3 + Nano 3S</span>
+          <span class="pill">Avalon Q Supported</span>
         </div>
         <h1>Control your miners without cloud lock-in.</h1>
         <p>Thermal Key is a CLI toolkit for monitoring, automation, and fleet management. It speaks directly to your Avalon miners so you can manage everything from any terminal on your LAN.</p>
@@ -556,7 +557,7 @@
       <div class="feature-grid">
         <div class="feature">
           <h3>Monitor</h3>
-          <p>Pull normalized status data for Mini 3 and Nano 3S miners, including temperature and power.</p>
+          <p>Pull normalized status data for Mini 3, Nano 3S, and Avalon Q miners, including temperature and power.</p>
         </div>
         <div class="feature">
           <h3>Control</h3>
@@ -646,6 +647,15 @@ thermal.py -H miners.txt status</code>
 thermal.py -H IP getauth</code>
         </div>
         <div class="command">
+          <h4>Avalon Q Controls</h4>
+          <code>thermal.py -H IP work-mode-level 1 2
+thermal.py -H IP voltage 2250
+thermal.py -H IP solo on
+thermal.py -H IP loop
+thermal.py -H IP timezone
+thermal.py -H IP qinfo</code>
+        </div>
+        <div class="command">
           <h4>Raw API</h4>
           <code>thermal.py -H IP raw COMMAND
 thermal.py -H IP ascset "0,..."</code>
@@ -665,7 +675,7 @@ thermal.py -H IP ascset "0,..."</code>
 
     <section class="section">
       <h2>Built for real hardware</h2>
-      <p>Thermal Key is optimized for Avalon Mini 3 and Nano 3S miners with device-aware parsing and safe defaults.</p>
+      <p>Thermal Key is optimized for Avalon Mini 3, Nano 3S, and Avalon Q miners with device-aware parsing and safe defaults.</p>
       <div class="cta">
         <a class="button primary" href="https://github.com/mars-llm/thermal-key">View on GitHub</a>
         <a class="button" href="https://github.com/mars-llm/thermal-key#readme">Read the README</a>

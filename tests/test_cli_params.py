@@ -37,7 +37,7 @@ class RecordingMiner:
         self.last_ascset = param
         return {"STATUS": [{"STATUS": "S", "Msg": "ASC 0 set OK"}]}
 
-    def parse_stats(self):
+    def parse_stats(self, device_key=None, version_entry=None):
         return {
             "hashrate": 40.0,
             "hashrate_max": 41.0,
@@ -97,6 +97,69 @@ class CliParamTests(unittest.TestCase):
         class Args: level = 3
         thermal.do_level(miner, Args)
         self.assertEqual(miner.last_ascset, "0,worklevel,set,3")
+
+    def test_do_work_mode_level(self):
+        miner = RecordingMiner()
+        class Args:
+            mode = 1
+            level = 2
+        thermal.do_work_mode_level(miner, Args)
+        self.assertEqual(miner.last_ascset, "0,work_mode_lvl,set,1,2")
+
+    def test_do_voltage(self):
+        miner = RecordingMiner()
+        class Args:
+            mv = 2250
+        thermal.do_voltage(miner, Args)
+        self.assertEqual(miner.last_ascset, "0,voltage,2250")
+
+    def test_do_voltage_invalid(self):
+        miner = RecordingMiner()
+        class Args:
+            mv = 3000
+        err = io.StringIO()
+        with redirect_stderr(err):
+            thermal.do_voltage(miner, Args)
+        self.assertIn("voltage must be in range 2150-2600", err.getvalue())
+        self.assertIsNone(miner.last_ascset)
+
+    def test_do_solo_allowed_on(self):
+        miner = RecordingMiner()
+        class Args:
+            enabled = "on"
+        thermal.do_solo_allowed(miner, Args)
+        self.assertEqual(miner.last_ascset, "0,solo-allowed,1")
+
+    def test_do_solo_allowed_invalid(self):
+        miner = RecordingMiner()
+        class Args:
+            enabled = "maybe"
+        err = io.StringIO()
+        with redirect_stderr(err):
+            thermal.do_solo_allowed(miner, Args)
+        self.assertIn("solo must be 0/1", err.getvalue())
+        self.assertIsNone(miner.last_ascset)
+
+    def test_do_loop_get(self):
+        miner = RecordingMiner()
+        class Args:
+            value = None
+        thermal.do_loop(miner, Args)
+        self.assertEqual(miner.last_ascset, "0,loop,get")
+
+    def test_do_loop_set(self):
+        miner = RecordingMiner()
+        class Args:
+            value = 160
+        thermal.do_loop(miner, Args)
+        self.assertEqual(miner.last_ascset, "0,loop,set,160")
+
+    def test_do_timezone(self):
+        miner = RecordingMiner()
+        class Args:
+            pass
+        thermal.do_timezone(miner, Args)
+        self.assertEqual(miner.last_ascset, "0,time,get")
 
     def test_switchpool(self):
         miner = RecordingMiner()

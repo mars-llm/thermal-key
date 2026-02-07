@@ -1,13 +1,13 @@
 Device integration tests
 
 These tests exercise real miners over the CGMiner API. They are meant to
-compare Avalon Mini 3 and Avalon Nano 3S behavior and highlight gaps needed
-for premium support.
+compare Avalon Mini 3, Avalon Nano 3S, and Avalon Q (when available) behavior
+and highlight gaps needed for premium support.
 
 Quick start
 
 - Run all read-only tests (unit + property + device):
-  - python -m unittest tests.test_cli tests.test_cli_params tests.test_parse_properties tests.test_devices
+  - python -m unittest tests.test_cli tests.test_cli_params tests.test_parse_properties tests.test_q_support tests.test_devices
 
 - Full suite shortcut:
   - ./scripts/test.sh
@@ -36,7 +36,11 @@ Safety notes
 
 JSON report emitter
 
-Generate a structured snapshot for comparing Mini 3 vs Nano 3S:
+Generate a structured snapshot for comparing Mini 3 vs Nano 3S (and Q):
 
 - python tests/report_devices.py --pretty
 - python tests/report_devices.py --pretty --out reports/device_report.json
+
+Avalon Q validation
+
+- Follow docs/avalon-q.md for the current Avalon Q API profile and command checks.

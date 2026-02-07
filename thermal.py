@@ -13,14 +13,122 @@ import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stdout, redirect_stderr
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Work mode name mappings (0=Heater, 1=Mining, 2=Night)
 MODE_NAMES = {0: "Heater", 1: "Mining", 2: "Night"}
 MODE_ABBREV = {0: "H", 1: "M", 2: "N"}
 
+DEVICE_PROFILES = {
+    "mini3": {"short": "Mini3", "label": "Avalon Mini 3"},
+    "nano3s": {"short": "Nano3s", "label": "Avalon Nano 3S"},
+    "q": {"short": "Q", "label": "Avalon Q"},
+}
 
-def parse_mm_id0(mm: str) -> Dict:
+DEFAULT_TEMP_KEYS = ["HBTemp", "OTemp", "TAvg", "MTavg", "TarT", "ITemp"]
+DEVICE_TEMP_KEYS = {
+    "mini3": DEFAULT_TEMP_KEYS,
+    "nano3s": DEFAULT_TEMP_KEYS,
+    "q": DEFAULT_TEMP_KEYS,
+}
+
+
+def _to_int(value, default: int = 0) -> int:
+    """Best-effort integer parser for mixed API payloads."""
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _status_msg(result: Optional[Dict]) -> str:
+    if not result:
+        return ""
+    return result.get("STATUS", [{}])[0].get("Msg", "")
+
+
+def _extract_ps_values(msg: str) -> Tuple[int, int, int]:
+    """Extract (power_in, voltage, power_out) from a PS[...] status message."""
+    match = re.search(r"PS\[([^\]]+)\]", msg)
+    if not match:
+        return 0, 0, 0
+    values = [_to_int(p, 0) for p in re.findall(r"-?\d+(?:\.\d+)?", match.group(1))]
+    if len(values) > 4:
+        return values[1], values[2], values[4]
+    return 0, 0, 0
+
+
+def _extract_loop_value(msg: str) -> int:
+    match = re.search(r"LOOP\[\s*(\d+)", msg)
+    if not match:
+        return 0
+    return _to_int(match.group(1), 0)
+
+
+def _extract_work_mode_level(msg: str) -> Tuple[int, int]:
+    mode_match = re.search(r"workmode\s+(\d+)", msg)
+    level_match = re.search(r"worklevel\s+(\d+)", msg)
+    return _to_int(mode_match.group(1), 0) if mode_match else 0, _to_int(level_match.group(1), 0) if level_match else 0
+
+
+def _hashrate_to_th(entry: Dict, key: str) -> float:
+    value = _to_float(entry.get(key), 0.0)
+    if key.startswith("MHS"):
+        return value / 1_000_000
+    if key.startswith("GHS"):
+        return value / 1_000
+    if key.startswith("KHS"):
+        return value / 1_000_000_000
+    return 0.0
+
+
+def _extract_hashrate_th(entry: Dict, keys: List[str]) -> float:
+    for key in keys:
+        if key in entry:
+            return _hashrate_to_th(entry, key)
+    return 0.0
+
+
+def _normalize_product_text(prod: Optional[str]) -> str:
+    text = (prod or "").lower()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def device_key_from_product(prod: Optional[str]) -> str:
+    text = _normalize_product_text(prod)
+    if "nano3" in text:
+        return "nano3s"
+    if "mini3" in text:
+        return "mini3"
+    if "avalonq" in text or re.search(r"\bavalon\s*q\b", text):
+        return "q"
+    if re.search(r"\bq\b", text) and ("avalon" in text or "canaan" in text or "miner" in text or text == "q"):
+        return "q"
+    return "unknown"
+
+
+def device_short_name(prod: Optional[str]) -> str:
+    key = device_key_from_product(prod)
+    profile = DEVICE_PROFILES.get(key)
+    if profile:
+        return profile["short"]
+    if not prod:
+        return "Unknown"
+    return prod[:8]
+
+
+def parse_mm_id0(mm: str, temp_keys: Optional[List[str]] = None) -> Dict:
     """Parse MM ID0 stats payload into normalized metrics."""
     def get(pattern, default="0"):
         m = re.search(pattern, mm)
@@ -86,7 +194,7 @@ def parse_mm_id0(mm: str) -> Dict:
     if power_in == 0 and ata_power > 0:
         power_in = ata_power
 
-    temp = select_temp(["HBTemp", "OTemp", "TAvg", "MTavg", "TarT", "ITemp"])
+    temp = select_temp(temp_keys or DEFAULT_TEMP_KEYS)
     temp_max = select_temp(["TMax", "MTmax"])
     worklevel = parse_int(get(r'WORKLVL\[(\d+)\]', None), 0)
     if worklevel == 0:
@@ -171,26 +279,102 @@ class Miner:
             return self._dna
         stats = self.cmd("stats")
         if not stats or "STATS" not in stats:
-            return None
-        for stat in stats["STATS"]:
-            if "MM ID0" not in stat:
+            stats = {"STATS": []}
+        for stat in stats.get("STATS", []):
+            mm_payload = stat.get("MM ID0")
+            if not mm_payload:
                 continue
-            match = re.search(r'DNA\[([0-9a-fA-F]+)\]', stat["MM ID0"])
+            match = re.search(r'DNA\[([0-9a-fA-F]+)\]', mm_payload)
             if match:
                 self._dna = match.group(1).lower()
                 return self._dna
+
+        ver = self.cmd("version")
+        if ver and "VERSION" in ver and ver["VERSION"]:
+            dna = ver["VERSION"][0].get("DNA")
+            if dna:
+                self._dna = dna.lower()
+                return self._dna
         return None
 
-    def parse_stats(self) -> Dict:
+    def _parse_fallback_stats(self, version_entry: Optional[Dict] = None) -> Dict:
+        """Build metrics from summary/devs + ascset info when MM ID0 is unavailable."""
+        summary_resp = self.cmd("summary")
+        devs_resp = self.cmd("devs")
+        summary = summary_resp.get("SUMMARY", [{}])[0] if summary_resp and "SUMMARY" in summary_resp else {}
+        dev = devs_resp.get("DEVS", [{}])[0] if devs_resp and "DEVS" in devs_resp else {}
+        if not summary and not dev:
+            return {}
+
+        hashrate = _extract_hashrate_th(summary, ["MHS av", "GHS av", "KHS av"])
+        if not hashrate:
+            hashrate = _extract_hashrate_th(dev, ["MHS av", "GHS av", "KHS av"])
+
+        hashrate_max = hashrate
+        for key in ["MHS 5s", "MHS 1m", "MHS 5m", "MHS 15m", "GHS 5s", "GHS 1m", "GHS 5m", "GHS 15m"]:
+            if key in summary:
+                hashrate_max = max(hashrate_max, _hashrate_to_th(summary, key))
+            if key in dev:
+                hashrate_max = max(hashrate_max, _hashrate_to_th(dev, key))
+
+        power_in = power_out = voltage = 0
+        ps_msg = _status_msg(self.ascset("0,voltage"))
+        if "PS[" in ps_msg:
+            power_in, voltage, power_out = _extract_ps_values(ps_msg)
+
+        workmode = worklevel = 0
+        work_msg = _status_msg(self.ascset("0,work_mode_lvl,get"))
+        if "workmode" in work_msg and "worklevel" in work_msg:
+            workmode, worklevel = _extract_work_mode_level(work_msg)
+        else:
+            workmode = _extract_work_mode_level(_status_msg(self.ascset("0,workmode,get")))[0]
+            worklevel = _extract_work_mode_level(_status_msg(self.ascset("0,worklevel,get")))[1]
+
+        freq = _extract_loop_value(_status_msg(self.ascset("0,loop,get")))
+
+        if not version_entry:
+            ver = self.cmd("version")
+            if ver and "VERSION" in ver and ver["VERSION"]:
+                version_entry = ver["VERSION"][0]
+            else:
+                version_entry = {}
+
+        return {
+            "hashrate": hashrate,
+            "hashrate_max": hashrate_max,
+            "uptime": _to_int(summary.get("Elapsed", dev.get("Device Elapsed", 0)), 0),
+            "temp": _to_int(dev.get("Temperature", 0), 0),
+            "temp_max": _to_int(dev.get("Temperature", 0), 0),
+            "fan_rpm": 0,
+            "fan_pct": 0,
+            "freq": freq,
+            "voltage": voltage,
+            "power_in": power_in,
+            "power_out": power_out,
+            "workmode": workmode,
+            "worklevel": worklevel,
+            "hw_errors": _to_int(dev.get("Hardware Errors", summary.get("Hardware Errors", 0)), 0),
+            "dh_rate": _to_float(dev.get("Device Rejected%", summary.get("Device Rejected%", summary.get("Pool Rejected%", 0))), 0.0),
+            "dna": (version_entry.get("DNA", "") or "").lower(),
+        }
+
+    def parse_stats(self, device_key: Optional[str] = None, version_entry: Optional[Dict] = None) -> Dict:
         """Extract metrics from stats response."""
         stats = self.cmd("stats")
         if not stats or "STATS" not in stats:
+            if device_key == "q":
+                return self._parse_fallback_stats(version_entry=version_entry)
             return {}
 
         for stat in stats["STATS"]:
             if "MM ID0" not in stat:
                 continue
-            return parse_mm_id0(stat["MM ID0"])
+            temp_keys = DEVICE_TEMP_KEYS.get(device_key, DEFAULT_TEMP_KEYS)
+            return parse_mm_id0(stat["MM ID0"], temp_keys=temp_keys)
+
+        # Avalon Q and some newer firmwares may omit MM ID0 and expose metrics via summary/devs.
+        if device_key == "q":
+            return self._parse_fallback_stats(version_entry=version_entry)
         return {}
 
     def compute_auth(self, password: str) -> Dict[str, str]:
@@ -217,7 +401,7 @@ class Miner:
         self.ascset(f"0,qr_auth,{creds['auth']},{creds['verify']}")
         try:
             resp = urllib.request.urlopen(f"http://{self.host}/is_login.cgi", timeout=5).read().decode()
-            match = re.search(r'"auth":"([^"]+)","code":"([^"]+)"', resp)
+            match = re.search(r'"auth"\s*:\s*"([^"]+)"\s*,\s*"code"\s*:\s*"([^"]+)"', resp)
             if match:
                 return match.group(1) + match.group(2)
         except (urllib.error.URLError, socket.timeout):
@@ -279,7 +463,9 @@ def do_status(m: Miner, args, compact: bool = False):
             print_err("failed to get version")
         return
     ver = ver["VERSION"][0]
-    stats = m.parse_stats()
+    prod = ver.get("PROD") or ver.get("MODEL") or ver.get("Model")
+    device_key = device_key_from_product(prod)
+    stats = m.parse_stats(device_key, version_entry=ver)
 
     if compact:
         # Single-line output for fleet view
@@ -328,10 +514,17 @@ def do_pools(m: Miner, args):
 
 
 def do_watch(m: Miner, args):
+    ver = m.cmd("version")
+    prod = None
+    version_entry = None
+    if ver and "VERSION" in ver and ver["VERSION"]:
+        version_entry = ver["VERSION"][0]
+        prod = version_entry.get("PROD") or version_entry.get("MODEL") or version_entry.get("Model")
+    device_key = device_key_from_product(prod)
     print(f"Monitoring {m.host} (Ctrl+C to stop)\n")
     try:
         while True:
-            stats = m.parse_stats()
+            stats = m.parse_stats(device_key, version_entry=version_entry)
             if stats:
                 timestamp = time.strftime("%H:%M:%S")
                 mode = MODE_ABBREV.get(stats['workmode'], '?')
@@ -370,6 +563,100 @@ def do_level(m: Miner, args):
     check_result(m.ascset(f"0,worklevel,set,{args.level}"), f"level set to {args.level}")
 
 
+def do_work_mode_level(m: Miner, args):
+    check_result(
+        m.ascset(f"0,work_mode_lvl,set,{args.mode},{args.level}"),
+        f"mode set to {MODE_NAMES.get(args.mode, args.mode)} (level {args.level})",
+    )
+
+
+def do_voltage(m: Miner, args):
+    if not 2150 <= args.mv <= 2600:
+        print_err("voltage must be in range 2150-2600 mV")
+        return
+    check_result(m.ascset(f"0,voltage,{args.mv}"), f"voltage set to {args.mv} mV")
+
+
+def do_solo_allowed(m: Miner, args):
+    value_text = str(args.enabled).strip().lower()
+    if value_text in {"1", "on", "true", "yes"}:
+        value = 1
+    elif value_text in {"0", "off", "false", "no"}:
+        value = 0
+    else:
+        print_err("solo must be 0/1 (or off/on)")
+        return
+    check_result(m.ascset(f"0,solo-allowed,{value}"), f"solo-allowed set to {value}")
+
+
+def do_qinfo(m: Miner, args):
+    version = m.cmd("version")
+    if not version or "VERSION" not in version or not version["VERSION"]:
+        print_err("failed to get version")
+        return
+    prod = version["VERSION"][0].get("PROD", "Unknown")
+    if device_key_from_product(prod) != "q":
+        print_err("qinfo is only available for Avalon Q devices")
+        return
+
+    work_msg = _status_msg(m.ascset("0,work_mode_lvl,get"))
+    loop_msg = _status_msg(m.ascset("0,loop,get"))
+    ps_msg = _status_msg(m.ascset("0,voltage"))
+    tz_msg = _status_msg(m.ascset("0,time,get"))
+
+    mode, level = _extract_work_mode_level(work_msg)
+    loop = _extract_loop_value(loop_msg)
+    power_in, voltage, power_out = _extract_ps_values(ps_msg)
+
+    print()
+    print(f"  Device     {prod} @ {m.host}")
+    print(f"  Work       {MODE_NAMES.get(mode, mode)} (level {level})")
+    print(f"  Loop       {loop}")
+    print(f"  Power/PSU  {power_in}W in, {power_out}W out @ {voltage} mV")
+    if tz_msg:
+        print(f"  Timezone   {tz_msg.replace('ASC 0 set info: ', '')}")
+    print()
+
+
+def _print_info_status(result: Optional[Dict], ok_message: str = "") -> bool:
+    if not result:
+        print_err("no response")
+        return False
+    status = result.get("STATUS", [{}])[0]
+    state = status.get("STATUS")
+    msg = status.get("Msg", "unknown error")
+    if state in {"S", "I"}:
+        if ok_message:
+            print_ok(ok_message)
+        else:
+            print_ok(msg.replace("ASC 0 set info: ", ""))
+        return True
+    print_err(msg)
+    return False
+
+
+def do_loop(m: Miner, args):
+    if args.value is None:
+        result = m.ascset("0,loop,get")
+        msg = _status_msg(result)
+        loop = _extract_loop_value(msg)
+        text = f"loop {loop}" if loop else msg.replace("ASC 0 set info: ", "")
+        _print_info_status(result, text)
+        return
+
+    result = m.ascset(f"0,loop,set,{args.value}")
+    msg = _status_msg(result)
+    loop = _extract_loop_value(msg)
+    text = f"loop set to {loop}" if loop else f"loop set request sent ({args.value})"
+    _print_info_status(result, text)
+
+
+def do_timezone(m: Miner, args):
+    result = m.ascset("0,time,get")
+    msg = _status_msg(result).replace("ASC 0 set info: ", "")
+    _print_info_status(result, msg)
+
+
 def do_switchpool(m: Miner, args):
     check_result(m.cmd("switchpool", str(args.id)), f"switched to pool {args.id}")
 
@@ -398,7 +685,7 @@ def do_auth(m: Miner, args):
 def do_getauth(m: Miner, args):
     try:
         resp = urllib.request.urlopen(f"http://{m.host}/get_auth.cgi", timeout=5).read().decode()
-        match = re.search(r'"auth":"([^"]+)"', resp)
+        match = re.search(r'"auth"\s*:\s*"([^"]+)"', resp)
         if match:
             print(f"auth: {match.group(1)}")
             dna = m.get_dna()
@@ -447,7 +734,7 @@ def main():
     prog = os.path.basename(sys.argv[0]) if sys.argv else 'thermal'
     parser = argparse.ArgumentParser(
         prog=prog,
-        description='Thermal Key control tool (Avalon Mini 3 / Nano 3S)',
+        description='Thermal Key control tool (Avalon Mini 3 / Nano 3S / Avalon Q)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
@@ -460,6 +747,12 @@ Commands:
   freq MHZ            Set chip frequency
   mode MODE           Set mode (0=Heater, 1=Mining, 2=Night)
   level N             Set performance level
+  work-mode-level M L Set mode + level in one command (Avalon Q)
+  voltage MV          Set PSU voltage in mV (Avalon Q: 2150-2600)
+  solo VALUE          Set solo mining allowed (Avalon Q: 0/1)
+  loop [VALUE]        Read/set Avalon Q loop parameter
+  timezone            Show Avalon Q timezone from firmware
+  qinfo               Show Avalon Q runtime info (mode, loop, PSU)
 
   switchpool ID       Switch active pool
   enablepool ID       Enable pool
@@ -504,6 +797,17 @@ Fleet management (multiple hosts):
     mo.add_argument('mode', type=int, choices=[0, 1, 2], help='0=Heater, 1=Mining, 2=Night')
     lv = sub.add_parser('level', help='Set performance level')
     lv.add_argument('level', type=int, help='Level')
+    ml = sub.add_parser('work-mode-level', help='Set mode and level together (Avalon Q)')
+    ml.add_argument('mode', type=int, choices=[0, 1, 2], help='0=Heater, 1=Mining, 2=Night')
+    ml.add_argument('level', type=int, help='Level')
+    vo = sub.add_parser('voltage', help='Set PSU voltage (Avalon Q)')
+    vo.add_argument('mv', type=int, help='2150-2600 mV')
+    so = sub.add_parser('solo', help='Set solo-allowed (Avalon Q)')
+    so.add_argument('enabled', help='0/1 or off/on')
+    lo = sub.add_parser('loop', help='Read or set Avalon Q loop value')
+    lo.add_argument('value', nargs='?', type=int, help='Optional loop value')
+    sub.add_parser('timezone', help='Show Avalon Q timezone')
+    sub.add_parser('qinfo', help='Show Avalon Q runtime info')
 
     sp = sub.add_parser('switchpool', help='Switch pool')
     sp.add_argument('id', type=int, help='Pool ID')
@@ -547,6 +851,12 @@ Fleet management (multiple hosts):
         'freq': do_freq,
         'mode': do_mode,
         'level': do_level,
+        'work-mode-level': do_work_mode_level,
+        'voltage': do_voltage,
+        'solo': do_solo_allowed,
+        'loop': do_loop,
+        'timezone': do_timezone,
+        'qinfo': do_qinfo,
         'switchpool': do_switchpool,
         'enablepool': do_enablepool,
         'disablepool': do_disablepool,
@@ -578,15 +888,10 @@ Fleet management (multiple hosts):
         ver = m.cmd("version")
         if not ver or "VERSION" not in ver:
             return f"{host:<16} {'':>8}  OFFLINE"
-        prod = ver["VERSION"][0].get("PROD", "Unknown")
-        # Shorten device name: "AvalonMiner Nano3s-..." -> "Nano3s"
-        if "Nano3" in prod:
-            dev = "Nano3s"
-        elif "Mini3" in prod:
-            dev = "Mini3"
-        else:
-            dev = prod[:8]
-        stats = m.parse_stats()
+        version_entry = ver["VERSION"][0]
+        prod = version_entry.get("PROD") or version_entry.get("MODEL") or version_entry.get("Model")
+        dev = device_short_name(prod)
+        stats = m.parse_stats(device_key_from_product(prod), version_entry=version_entry)
         if stats:
             mode = MODE_ABBREV.get(stats['workmode'], '?')
             return (f"{host:<16} {dev:>8}  {stats['hashrate']:>6.1f} TH/s  {stats['temp']:>3}C  "

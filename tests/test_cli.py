@@ -96,7 +96,7 @@ class FakeMiner:
     def ascset(self, param):
         return {"STATUS": [{"STATUS": "S", "Msg": "ASC 0 set OK"}]}
 
-    def parse_stats(self):
+    def parse_stats(self, device_key=None, version_entry=None):
         return thermal.parse_mm_id0(_make_mm())
 
 
