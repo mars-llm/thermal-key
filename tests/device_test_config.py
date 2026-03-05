@@ -34,9 +34,24 @@ def load_hosts():
     return hosts or list(DEFAULT_HOSTS)
 
 
+def _env_bool(name, default=False):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+
+    value = raw.strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    return default
+
+
 HOSTS = load_hosts()
 PORT = int(os.getenv("TK_PORT", "4028"))
 TIMEOUT = int(os.getenv("TK_TIMEOUT", "5"))
 
-SKIP_OFFLINE = os.getenv("TK_SKIP_OFFLINE", "").lower() in {"1", "true", "yes"}
-ALLOW_WRITE = os.getenv("TK_ALLOW_WRITE", "").lower() in {"1", "true", "yes"}
+SKIP_OFFLINE = _env_bool("TK_SKIP_OFFLINE", default=True)
+ALLOW_WRITE = _env_bool("TK_ALLOW_WRITE", default=False)

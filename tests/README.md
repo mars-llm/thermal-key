@@ -7,7 +7,7 @@ and highlight gaps needed for premium support.
 Quick start
 
 - Run all read-only tests (unit + property + device):
-  - python -m unittest tests.test_cli tests.test_cli_params tests.test_parse_properties tests.test_q_support tests.test_devices
+  - python -m unittest tests.test_cli tests.test_cli_params tests.test_device_test_config tests.test_parse_properties tests.test_q_support tests.test_devices
 
 - Full suite shortcut:
   - ./scripts/test.sh
@@ -21,7 +21,9 @@ Environment variables
 - TK_HOSTS_FILE: Path to file with one host per line (appends)
 - TK_PORT: CGMiner port (default 4028)
 - TK_TIMEOUT: Socket timeout in seconds (default 5)
-- TK_SKIP_OFFLINE: If set, skip hosts that do not respond
+- TK_SKIP_OFFLINE: Offline-host policy for device tests (default: skip)
+  - Unset / `1` / `true` / `yes`: skip hosts that do not respond
+  - `0` / `false` / `no`: fail tests when a configured host is offline
 
 Write tests (opt-in)
 
