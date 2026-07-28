@@ -46,6 +46,7 @@ def collect_host(host):
         "version": {},
         "summary": {},
         "stats_parsed": {},
+        "health": {},
         "stats_raw": {},
         "ascset_commands": [],
         "errors": [],
@@ -70,6 +71,7 @@ def collect_host(host):
     stats_parsed = miner.parse_stats(entry["device_key"], version_entry=entry["version"])
     if stats_parsed:
         entry["stats_parsed"] = stats_parsed
+        entry["health"] = thermal.evaluate_health(stats_parsed)
     else:
         entry["errors"].append("parse_stats empty")
 

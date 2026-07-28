@@ -100,9 +100,23 @@ python3 thermal.py -H 192.168.1.100 watch
 | Timezone | `thermal.py -H IP timezone` | Avalon Q firmware timezone |
 | Q runtime info | `thermal.py -H IP qinfo` | Avalon Q work mode, loop, and PSU info |
 | Pool switch | `thermal.py -H IP switchpool 0` | Activate pool index |
-| Auth | `thermal.py -H IP auth PASSWORD` | Web UI auth cookie |
+| Auth | `thermal.py -H IP auth PASSWORD` | Web UI auth cookie (redacted by default) |
 | Recovery | `thermal.py -H IP getauth` | Retrieve auth hash |
 | Raw API | `thermal.py -H IP raw COMMAND` | CGMiner API passthrough |
+
+## Reliability and safety flags
+
+Use these global flags with any command:
+
+- `--retries 2` retry transient network failures for read-only/idempotent probes
+- `--backoff-ms 200` initial retry backoff in milliseconds
+- `--jitter-pct 20` randomize retry delay
+- `--log-jsonl PATH` append structured run events (schema version `1`)
+- `--show-secrets` print full auth/hash/cookie values (default is redacted)
+
+For mutating multi-host commands, Thermal Key runs a `version` preflight by default and skips unhealthy hosts.
+Use `--no-preflight` to disable this behavior.
+Mutating commands are not automatically replayed after an ambiguous network failure.
 
 ## Fleet workflows
 
@@ -126,10 +140,14 @@ If you are locked out of the web UI, you can retrieve the auth hash with:
 thermal.py -H IP getauth
 ```
 
+Sensitive values are redacted by default in `auth` and `getauth` output.
+Use `--show-secrets` only when you need the full values in terminal history.
+
 Then use the optional recovery helper:
 
 ```bash
 python3 password.py -d IP -w wordlist.txt
+# add --show-secrets only if you need full hash/cookie output
 ```
 
 ## Security notice

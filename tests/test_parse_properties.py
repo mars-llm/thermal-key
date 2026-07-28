@@ -70,7 +70,7 @@ class ParseMini3Properties(unittest.TestCase):
             self.assertEqual(stats["workmode"], workmode)
             self.assertEqual(stats["worklevel"], worklevel)
             self.assertEqual(stats["hw_errors"], hw)
-            self.assertAlmostEqual(stats["dh_rate"], dh, places=3)
+            self.assertAlmostEqual(stats["device_dh_percent"], dh, places=3)
             self.assertEqual(stats["dna"], dna.lower())
             self.assertAlmostEqual(stats["hashrate"], ghsavg / 1000, places=3)
             self.assertAlmostEqual(stats["hashrate_max"], ghsmm / 1000, places=3)
@@ -129,12 +129,50 @@ class ParseNano3sProperties(unittest.TestCase):
             self.assertEqual(stats["workmode"], workmode)
             self.assertEqual(stats["worklevel"], worklevel)
             self.assertEqual(stats["hw_errors"], hw)
-            self.assertAlmostEqual(stats["dh_rate"], dh, places=3)
+            self.assertAlmostEqual(stats["device_dh_percent"], dh, places=3)
             self.assertEqual(stats["dna"], dna.lower())
             self.assertAlmostEqual(stats["hashrate"], ghsavg / 1000, places=3)
             self.assertAlmostEqual(stats["hashrate_max"], ghsmm / 1000, places=3)
 
-    def test_invalid_itemp_falls_back_to_zero(self):
+    def test_live_nano3s_ata0_fallback_and_unknown_zero_max(self):
+        fields = {
+            "GHSavg": "820.56",
+            "GHSmm": "0.00",
+            "Elapsed": "268",
+            "OTemp": "40",
+            "ITemp": "-273",
+            "TMax": "46",
+            "TarT": "80",
+            "Fan1": "1100",
+            "FanR": "25%",
+            "PS": "0 0 27923 1 0 3236 39",
+            "SF0": "618 639 660 678",
+            "ATA0": "62-80-3314-210-20",
+            "WORKMODE": "0",
+            "WORKLEVEL": "0",
+            "HW": "0",
+            "DH": "40.262%",
+            "PING": "233",
+            "NETFAIL": "0 0 0 0",
+            "MEMFREE": "64748",
+            "PFCnt": "2",
+            "DNA": "0201000073d19147",
+        }
+        stats = thermal.parse_mm_id0(_build_mm(fields))
+        self.assertEqual(stats["power_in"], 62)
+        self.assertIsNone(stats["power_out"])
+        self.assertEqual(stats["voltage"], 3314)
+        self.assertIsNone(stats["hashrate_max"])
+        self.assertIsNone(stats["temp_inlet"])
+        self.assertEqual(stats["target_temp"], 80)
+        self.assertEqual(stats["fan_rpms"], [1100])
+        self.assertEqual(stats["ping_ms"], 233)
+        self.assertEqual(stats["net_failures"], [0, 0, 0, 0])
+        self.assertEqual(stats["net_failures_total"], 0)
+        self.assertEqual(stats["memory_free_kb"], 64748)
+        self.assertEqual(stats["pf_count"], 2)
+
+    def test_invalid_itemp_is_unknown(self):
         fields = {
             "GHSavg": "0.00",
             "GHSmm": "0.00",
@@ -153,7 +191,7 @@ class ParseNano3sProperties(unittest.TestCase):
         }
         mm = _build_mm(fields)
         stats = thermal.parse_mm_id0(mm)
-        self.assertEqual(stats["temp"], 0)
+        self.assertIsNone(stats["temp"])
 
 
 if __name__ == "__main__":

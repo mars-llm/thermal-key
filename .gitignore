@@ -53,6 +53,7 @@ ENV/
 
 # Codex
 .codex/
+.state/
 
 # Local documentation drafts
 doc/

@@ -103,7 +103,8 @@ class DeviceIntegrationTests(unittest.TestCase):
             with self.subTest(host=host):
                 miner, ver = self._require_online(host)
                 prod = ver.get("PROD") or ver.get("MODEL") or ver.get("Model")
-                stats = miner.parse_stats(thermal.device_key_from_product(prod), version_entry=ver)
+                device_key = thermal.device_key_from_product(prod)
+                stats = miner.parse_stats(device_key, version_entry=ver)
                 if not stats:
                     raw = miner.cmd("stats") or {}
                     mm_ids = [s.get("MM ID0") for s in raw.get("STATS", []) if "MM ID0" in s]
@@ -115,27 +116,50 @@ class DeviceIntegrationTests(unittest.TestCase):
                     "uptime",
                     "temp",
                     "temp_max",
+                    "temp_inlet",
+                    "temp_board_inlet",
+                    "temp_board_outlet",
+                    "target_temp",
                     "fan_rpm",
+                    "fan_rpms",
                     "fan_pct",
+                    "fan_error",
                     "freq",
                     "voltage",
                     "power_in",
                     "power_out",
+                    "rssi",
+                    "ping_ms",
+                    "net_failures",
+                    "net_failures_total",
+                    "filter_value",
+                    "memory_free_kb",
+                    "pf_count",
                     "workmode",
                     "worklevel",
                     "hw_errors",
-                    "dh_rate",
+                    "reject_rate",
+                    "device_dh_percent",
                     "dna",
                 }
                 for key in required:
                     self.assertIn(key, stats, f"stats missing {key}: {stats}")
 
                 self.assertGreaterEqual(stats["hashrate"], 0)
-                self.assertGreaterEqual(stats["temp"], 0)
-                self.assertLessEqual(stats["temp"], 130)
-                self.assertGreaterEqual(stats["fan_pct"], 0)
-                self.assertLessEqual(stats["fan_pct"], 100)
                 self.assertGreaterEqual(stats["uptime"], 0)
+                if device_key != "q":
+                    self.assertIsNotNone(stats["temp"])
+                    self.assertIsNotNone(stats["fan_pct"])
+                if stats["temp"] is not None:
+                    self.assertGreaterEqual(stats["temp"], 0)
+                    self.assertLessEqual(stats["temp"], 130)
+                if stats["fan_pct"] is not None:
+                    self.assertGreaterEqual(stats["fan_pct"], 0)
+                    self.assertLessEqual(stats["fan_pct"], 100)
+                health = thermal.evaluate_health(stats)
+                self.assertIn(health["status"], {"OK", "WARN", "CRITICAL"})
+                self.assertGreaterEqual(health["score"], 0)
+                self.assertLessEqual(health["score"], 100)
 
     def test_stats_parse_consistency_with_raw(self):
         for host in HOSTS:

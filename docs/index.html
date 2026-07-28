@@ -642,6 +642,12 @@ thermal.py -H IP level 3</code>
 thermal.py -H miners.txt status</code>
         </div>
         <div class="command">
+          <h4>Reliability</h4>
+          <code>thermal.py --retries 2 --backoff-ms 200 --jitter-pct 20 -H IP status
+thermal.py --log-jsonl run.jsonl -H ip1,ip2 mode 2
+thermal.py --no-preflight -H ip1,ip2 fan 80</code>
+        </div>
+        <div class="command">
           <h4>Auth + Recovery</h4>
           <code>thermal.py -H IP auth PASS
 thermal.py -H IP getauth</code>
@@ -670,6 +676,7 @@ thermal.py -H IP ascset "0,..."</code>
         <strong>CGMiner API warning</strong>
         <span>The CGMiner API on port 4028 has no authentication. Anyone on your network can control your miner.</span>
         <span>Recommended: isolate miners on a VLAN, firewall port 4028, and use strong web UI passwords.</span>
+        <span>Auth and recovery commands redact sensitive hashes/cookies by default. Use <code>--show-secrets</code> only when needed.</span>
       </div>
     </section>
 

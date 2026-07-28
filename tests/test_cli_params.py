@@ -8,7 +8,7 @@ import thermal
 
 
 class RecordingMiner:
-    def __init__(self, host="192.168.0.10", port=4028, timeout=10):
+    def __init__(self, host="192.168.0.10", port=4028, timeout=10, **_kwargs):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -53,7 +53,8 @@ class RecordingMiner:
             "workmode": 1,
             "worklevel": 0,
             "hw_errors": 0,
-            "dh_rate": 1.0,
+            "reject_rate": 1.0,
+            "device_dh_percent": 1.0,
             "dna": "0201000046d3803b",
         }
 

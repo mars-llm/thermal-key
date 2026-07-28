@@ -21,8 +21,8 @@ import sys
 import time
 import urllib.request
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from itertools import product
-from typing import Generator, Optional
+from itertools import islice, product
+from typing import Dict, Generator, List, Optional, Tuple
 
 # ============================================================================
 # CHARACTER SETS
@@ -66,6 +66,17 @@ LEET_MAP = {
 }
 
 
+def redact_secret(value: Optional[str], show_secrets: bool, keep: int = 4) -> str:
+    text = "" if value is None else str(value)
+    if show_secrets:
+        return text
+    if not text:
+        return "N/A"
+    if len(text) <= keep * 2:
+        return "*" * len(text)
+    return f"{text[:keep]}...{text[-keep:]}"
+
+
 # ============================================================================
 # CORE HASH FUNCTIONS
 # ============================================================================
@@ -84,13 +95,13 @@ def compute_auth_fast(password: str, dna_bytes: bytes) -> str:
     return hashlib.sha256(auth_input).hexdigest()[:8]
 
 
-def check_password_batch(args: tuple[list, str, bytes]) -> Optional[str]:
-    """Check a batch of passwords. Returns password if found, None otherwise."""
+def check_password_batch(args: Tuple[List[str], str, bytes]) -> Tuple[Optional[str], int]:
+    """Check a batch and return the match plus the number actually checked."""
     passwords, target, dna_bytes = args
-    for password in passwords:
+    for checked, password in enumerate(passwords, start=1):
         if compute_auth_fast(password, dna_bytes) == target:
-            return password
-    return None
+            return password, checked
+    return None, len(passwords)
 
 
 # ============================================================================
@@ -170,7 +181,7 @@ def generate_mask_candidates(mask: str) -> Generator[str, None, None]:
         yield ''.join(combo)
 
 
-def generate_hybrid(words: list[str], suffix_len: int) -> Generator[str, None, None]:
+def generate_hybrid(words: List[str], suffix_len: int) -> Generator[str, None, None]:
     """Hybrid attack: wordlist + brute force suffix."""
     suffix_chars = CHARSET_DIGITS + CHARSET_SPECIAL_COMMON
 
@@ -217,7 +228,7 @@ def count_mask_combinations(mask: str) -> int:
 # DEVICE COMMUNICATION
 # ============================================================================
 
-def fetch_device_info(ip: str) -> tuple[str, str]:
+def fetch_device_info(ip: str) -> Tuple[str, str]:
     """Fetch auth target and DNA from device."""
     try:
         auth_url = f'http://{ip}/get_auth.cgi'
@@ -278,16 +289,21 @@ def crack_generator(
     desc: str = "Recovering",
     num_workers: Optional[int] = None,
     batch_size: int = 10000,
+    show_secrets: bool = False,
 ) -> Optional[str]:
     """Generic cracking engine using a password generator."""
     if num_workers is None:
         num_workers = multiprocessing.cpu_count()
+    if num_workers < 1:
+        raise ValueError("num_workers must be >= 1")
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
 
     dna_bytes = dna.encode()
 
     print(f"[*] {desc}")
-    print(f"[*] Target: {target}")
-    print(f"[*] DNA: {dna}")
+    print(f"[*] Target: {redact_secret(target, show_secrets)}")
+    print(f"[*] DNA: {redact_secret(dna, show_secrets)}")
     print(f"[*] Workers: {num_workers}")
     if total > 0:
         print(f"[*] Keyspace: {total:,}")
@@ -299,58 +315,51 @@ def crack_generator(
     start_time = time.time()
     checked = 0
     found = None
+    max_in_flight = max(1, num_workers * 2)
+    executor = ProcessPoolExecutor(max_workers=num_workers)
+    futures: Dict[object, int] = {}
+    exhausted = False
+    interrupted = False
 
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = []
-        batch = []
+    try:
+        while futures or not exhausted:
+            while not exhausted and len(futures) < max_in_flight:
+                batch = list(islice(generator, batch_size))
+                if not batch:
+                    exhausted = True
+                    break
+                future = executor.submit(check_password_batch, (batch, target, dna_bytes))
+                futures[future] = len(batch)
 
-        try:
-            for password in generator:
-                batch.append(password)
+            if not futures:
+                break
 
-                if len(batch) >= batch_size:
-                    futures.append(executor.submit(check_password_batch, (batch.copy(), target, dna_bytes)))
-                    batch.clear()
+            future = next(as_completed(futures))
+            futures.pop(future)
+            result, batch_checked = future.result()
+            checked += batch_checked
 
-                    # Check completed futures
-                    done_futures = [f for f in futures if f.done()]
-                    for future in done_futures:
-                        result = future.result()
-                        if result:
-                            found = result
-                            break
-                        futures.remove(future)
+            if result:
+                found = result
+                break
 
-                    if found:
-                        break
+            elapsed = time.time() - start_time
+            rate = checked / elapsed if elapsed > 0 else 0
+            if total > 0:
+                pct = min(100.0, (checked / total) * 100)
+                eta = max(0, total - checked) / rate if rate > 0 else 0
+                print(f"\r[*] {pct:.2f}% | {checked:,}/{total:,} | {rate:,.0f}/s | ETA: {eta:.0f}s", end='')
+            else:
+                print(f"\r[*] Checked: {checked:,} | {rate:,.0f}/s | {elapsed:.1f}s", end='')
 
-                    # Progress update
-                    checked += batch_size
-                    elapsed = time.time() - start_time
-                    rate = checked / elapsed if elapsed > 0 else 0
-                    if total > 0:
-                        pct = (checked / total) * 100
-                        eta = (total - checked) / rate if rate > 0 else 0
-                        print(f"\r[*] {pct:.2f}% | {checked:,}/{total:,} | {rate:,.0f}/s | ETA: {eta:.0f}s", end='')
-                    else:
-                        print(f"\r[*] Checked: {checked:,} | {rate:,.0f}/s | {elapsed:.1f}s", end='')
-
-            # Submit remaining batch
-            if batch and not found:
-                futures.append(executor.submit(check_password_batch, (batch.copy(), target, dna_bytes)))
-
-            # Wait for remaining futures
-            if not found:
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result:
-                        found = result
-                        break
-
-        except KeyboardInterrupt:
-            print("\n[!] Interrupted")
-            executor.shutdown(wait=False)
-            return None
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\n[!] Interrupted")
+        return None
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=not interrupted)
 
     elapsed = time.time() - start_time
     print()
@@ -373,6 +382,7 @@ def crack_wordlist(
     use_rules: bool = False,
     num_workers: Optional[int] = None,
     batch_size: int = 10000,
+    show_secrets: bool = False,
 ) -> Optional[str]:
     """Dictionary attack using wordlist file."""
 
@@ -394,7 +404,16 @@ def crack_wordlist(
     total = line_count * (30 if use_rules else 1)
     desc = f"Dictionary: {wordlist_path}" + (" +rules" if use_rules else "")
 
-    return crack_generator(target, dna, word_generator(), total, desc, num_workers, batch_size)
+    return crack_generator(
+        target,
+        dna,
+        word_generator(),
+        total,
+        desc,
+        num_workers,
+        batch_size,
+        show_secrets=show_secrets,
+    )
 
 
 def crack_mask(
@@ -403,11 +422,19 @@ def crack_mask(
     mask: str,
     num_workers: Optional[int] = None,
     batch_size: int = 10000,
+    show_secrets: bool = False,
 ) -> Optional[str]:
     """Mask attack with pattern."""
     total = count_mask_combinations(mask)
     return crack_generator(
-        target, dna, generate_mask_candidates(mask), total, f"Mask: {mask}", num_workers, batch_size
+        target,
+        dna,
+        generate_mask_candidates(mask),
+        total,
+        f"Mask: {mask}",
+        num_workers,
+        batch_size,
+        show_secrets=show_secrets,
     )
 
 
@@ -418,6 +445,7 @@ def crack_hybrid(
     suffix_len: int,
     num_workers: Optional[int] = None,
     batch_size: int = 10000,
+    show_secrets: bool = False,
 ) -> Optional[str]:
     """Hybrid attack: wordlist + brute force suffix."""
     words = []
@@ -439,6 +467,7 @@ def crack_hybrid(
         f"Hybrid: {wordlist_path} + {suffix_len}-char suffix",
         num_workers,
         batch_size,
+        show_secrets=show_secrets,
     )
 
 
@@ -450,6 +479,7 @@ def crack_bruteforce(
     min_len: int = 1,
     num_workers: Optional[int] = None,
     batch_size: int = 50000,
+    show_secrets: bool = False,
 ) -> Optional[str]:
     """Brute force attack."""
     total = count_combinations(charset, max_len, min_len)
@@ -461,10 +491,11 @@ def crack_bruteforce(
         f"Brute force: {min_len}-{max_len} chars, {len(charset)} char set",
         num_workers,
         batch_size,
+        show_secrets=show_secrets,
     )
 
 
-def print_credentials(password: str, dna: str) -> None:
+def print_credentials(password: str, dna: str, show_secrets: bool = False) -> None:
     """Print full credentials for a recovered password."""
     webpass = hashlib.sha256(password.encode()).hexdigest()
     code = hashlib.sha256(dna.encode()).hexdigest()[:24]
@@ -477,13 +508,16 @@ def print_credentials(password: str, dna: str) -> None:
     print("CREDENTIALS")
     print("=" * 60)
     print(f"Password: {password}")
-    print(f"Auth:     {auth}")
-    print(f"Code:     {code}")
-    print(f"Verify:   {verify}")
-    print(f"Cookie:   {cookie}")
+    print(f"Auth:     {redact_secret(auth, show_secrets)}")
+    print(f"Code:     {redact_secret(code, show_secrets)}")
+    print(f"Verify:   {redact_secret(verify, show_secrets)}")
+    print(f"Cookie:   {redact_secret(cookie, show_secrets)}")
     print()
     print("To authenticate via CGMiner API:")
-    print(f'  echo \'{{"command":"ascset","parameter":"0,qr_auth,{auth},{verify}"}}\' | nc <IP> 4028')
+    if show_secrets:
+        print(f'  echo \'{{"command":"ascset","parameter":"0,qr_auth,{auth},{verify}"}}\' | nc <IP> 4028')
+    else:
+        print('  echo \'{"command":"ascset","parameter":"0,qr_auth,<auth>,<verify>"}\' | nc <IP> 4028')
     print()
 
 
@@ -529,8 +563,20 @@ Examples:
     # Performance
     parser.add_argument('--workers', '-j', type=int, help='Worker processes (default: CPU count)')
     parser.add_argument('--batch-size', type=int, default=10000, help='Batch size (default: 10000)')
+    parser.add_argument('--show-secrets', action='store_true', help='Show full auth/hash/cookie values in output')
 
     args = parser.parse_args()
+
+    if args.workers is not None and args.workers < 1:
+        parser.error("--workers must be >= 1")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be >= 1")
+    if args.min_len < 1:
+        parser.error("--min-len must be >= 1")
+    if args.max_len < args.min_len:
+        parser.error("--max-len must be >= --min-len")
+    if args.hybrid is not None and args.hybrid < 0:
+        parser.error("--hybrid must be >= 0")
 
     if not (args.wordlist or args.mask or args.bruteforce):
         parser.error("Specify attack mode: --wordlist, --mask, or --bruteforce")
@@ -545,8 +591,8 @@ Examples:
         print(f"[*] Connecting to {args.device}...")
         try:
             target, dna = fetch_device_info(args.device)
-            print(f"[+] Auth: {target}")
-            print(f"[+] DNA: {dna}")
+            print(f"[+] Auth: {redact_secret(target, args.show_secrets)}")
+            print(f"[+] DNA: {redact_secret(dna, args.show_secrets)}")
         except ValueError as e:
             print(f"[-] Error: {e}")
             sys.exit(1)
@@ -567,15 +613,15 @@ Examples:
             print("[*] Run with --wordlists for download instructions")
             sys.exit(1)
 
-        if args.hybrid:
+        if args.hybrid is not None:
             result = crack_hybrid(target, dna, args.wordlist, args.hybrid,
-                                 args.workers, args.batch_size)
+                                 args.workers, args.batch_size, args.show_secrets)
         else:
             result = crack_wordlist(target, dna, args.wordlist, args.rules,
-                                   args.workers, args.batch_size)
+                                   args.workers, args.batch_size, args.show_secrets)
 
     elif args.mask:
-        result = crack_mask(target, dna, args.mask, args.workers, args.batch_size)
+        result = crack_mask(target, dna, args.mask, args.workers, args.batch_size, args.show_secrets)
 
     elif args.bruteforce:
         charset_map = {
@@ -586,11 +632,18 @@ Examples:
             'all': CHARSET_ALL,
         }
         result = crack_bruteforce(
-            target, dna, charset_map[args.charset], args.max_len, args.min_len, args.workers, args.batch_size
+            target,
+            dna,
+            charset_map[args.charset],
+            args.max_len,
+            args.min_len,
+            args.workers,
+            args.batch_size,
+            args.show_secrets,
         )
 
     if result:
-        print_credentials(result, dna)
+        print_credentials(result, dna, args.show_secrets)
         sys.exit(0)
     else:
         print("\n[*] Password not found. Try:")

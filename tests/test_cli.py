@@ -48,7 +48,7 @@ def _make_mm(
 
 
 class FakeMiner:
-    def __init__(self, host, port=4028, timeout=10):
+    def __init__(self, host, port=4028, timeout=10, **_kwargs):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -106,6 +106,15 @@ class CliUnitTests(unittest.TestCase):
             handle.write("192.168.1.10\n")
             handle.write("\n")
             handle.write("# comment\n")
+            handle.write("192.168.1.11\n")
+            handle.flush()
+            hosts = thermal.parse_hosts(handle.name)
+        self.assertEqual(hosts, ["192.168.1.10", "192.168.1.11"])
+
+    def test_parse_hosts_file_ignores_indented_comments(self):
+        with tempfile.NamedTemporaryFile("w+", delete=True) as handle:
+            handle.write("192.168.1.10\n")
+            handle.write("   # comment\n")
             handle.write("192.168.1.11\n")
             handle.flush()
             hosts = thermal.parse_hosts(handle.name)

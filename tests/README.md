@@ -7,7 +7,7 @@ and highlight gaps needed for premium support.
 Quick start
 
 - Run all read-only tests (unit + property + device):
-  - python -m unittest tests.test_cli tests.test_cli_params tests.test_device_test_config tests.test_parse_properties tests.test_q_support tests.test_devices
+  - python -m unittest tests.test_cli tests.test_cli_params tests.test_health tests.test_password tests.test_resilience tests.test_device_test_config tests.test_parse_properties tests.test_q_support tests.test_devices
 
 - Full suite shortcut:
   - ./scripts/test.sh
