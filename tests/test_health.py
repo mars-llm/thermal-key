@@ -1,9 +1,12 @@
 """Unit tests for extended health metrics and performance scoring."""
 
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 import thermal
 
@@ -123,6 +126,58 @@ class HealthScoreTests(unittest.TestCase):
 
         self.assertEqual(tracker.samples.maxlen, 4)
         self.assertAlmostEqual(health["baseline_hashrate"], 99.5)
+
+    def test_tracker_relearns_after_device_reboot_in_the_same_mode(self):
+        tracker = thermal.HealthTracker()
+        for uptime in (100, 105, 110, 115):
+            tracker.evaluate(_healthy_stats(hashrate=100, uptime=uptime))
+        self.assertEqual(tracker.baseline_hashrate, 100)
+        health = tracker.evaluate(_healthy_stats(hashrate=10, uptime=1))
+        self.assertIsNone(health["baseline_hashrate"])
+        self.assertNotIn("hashrate_drift", {issue["code"] for issue in health["issues"]})
+        self.assertEqual(list(tracker.samples), [10])
+
+    def test_invalid_reject_percentage_falls_back_to_valid_counters(self):
+        for value in (None, "not a number", "nan", "inf", -1, 101):
+            with self.subTest(value=value):
+                self.assertAlmostEqual(
+                    thermal._extract_reject_rate({"Pool Rejected%": value, "Accepted": 9, "Rejected": 1}),
+                    10,
+                )
+
+    def test_nonfinite_hashrate_cannot_poison_the_baseline(self):
+        tracker = thermal.HealthTracker()
+        for value in (float("inf"), float("nan")):
+            tracker.evaluate(_healthy_stats(hashrate=value))
+        self.assertEqual(list(tracker.samples), [])
+
+    def test_watch_marks_missing_telemetry_and_recovers(self):
+        class Miner:
+            host = "miner"
+
+            def cmd(self, command):
+                return {"VERSION": [{"PROD": "Avalon Nano3s"}]}
+
+            def parse_stats(self, *args, **kwargs):
+                return next(self.snapshots)
+
+        class Args:
+            interval = 1
+            log_jsonl = "watch.jsonl"
+
+        miner = Miner()
+        miner.snapshots = iter([_healthy_stats(), {}, _healthy_stats(hashrate=42)])
+        output = io.StringIO()
+        with patch("thermal.time.sleep", side_effect=[None, None, KeyboardInterrupt]), patch(
+            "thermal.append_jsonl"
+        ) as log, redirect_stdout(output):
+            self.assertTrue(thermal.do_watch(miner, Args))
+        self.assertIn("UNAVAILABLE (no current stats)", output.getvalue())
+        self.assertIn("42.0 TH/s", output.getvalue())
+        self.assertEqual(
+            [call.args[1]["event"] for call in log.call_args_list],
+            ["health", "watch_unavailable", "health"],
+        )
 
     def test_health_event_is_structured_json(self):
         stats = _healthy_stats()

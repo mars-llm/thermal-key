@@ -11,6 +11,8 @@ Quick start
 
 - Full suite shortcut:
   - ./scripts/test.sh
+- Offline-only tests (no device integration imports or LAN access):
+  - ./scripts/test.sh --offline
 - Run with default hosts (preconfigured in tests/device_test_config.py):
   - 192.168.130.132 (Mini 3)
   - 192.168.130.83 (Nano 3S)
@@ -25,16 +27,12 @@ Environment variables
   - Unset / `1` / `true` / `yes`: skip hosts that do not respond
   - `0` / `false` / `no`: fail tests when a configured host is offline
 
-Write tests (opt-in)
+Device write tests (disabled)
 
-These modify device settings and should be run only when it is safe.
-Tuning is experimental and not recommended for Nano 3S at this time.
-
-- TK_ALLOW_WRITE=1 enables write smoke tests (noop set to current values)
-  - python -m unittest tests.test_devices.DeviceWriteSmokeTests
-Safety notes
-
-- Write tests only set current values back onto the device.
+The write smoke test always skips, including with `TK_ALLOW_WRITE=1`.
+Observed fan speed and frequency do not preserve fan automation or individual
+PLL settings when written back. Device write testing requires a verified,
+device-specific configuration snapshot and restore procedure.
 
 JSON report emitter
 

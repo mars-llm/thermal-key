@@ -2,6 +2,7 @@
 
 import random
 import unittest
+from unittest.mock import patch
 
 import thermal
 
@@ -18,6 +19,46 @@ def _rand_range(rng, low, high):
 
 
 class ParseMini3Properties(unittest.TestCase):
+    def test_decimal_ps_fields_do_not_shift_power_indexes(self):
+        stats = thermal.parse_mm_id0("PS[0 1200.5 2150.0 33 730.5 2151 810]")
+        self.assertEqual(stats["power_in"], 1200)
+        self.assertEqual(stats["power_out"], 730)
+
+    def test_out_of_range_numeric_payloads_do_not_crash(self):
+        huge = "9" * 400
+        stats = thermal.parse_mm_id0(f"Fan1[{huge}] Freq[{huge}] GHSavg[{huge}]")
+        self.assertIsNone(stats["fan_rpm"])
+        self.assertIsNone(stats["freq"])
+        self.assertIsNone(stats["hashrate"])
+        for value in ("nan", "inf", "-inf", "1e1000"):
+            with self.subTest(value=value):
+                self.assertIsNone(thermal._to_int(value, None))
+                self.assertIsNone(thermal._to_float(value, None))
+
+    def test_malformed_stats_entries_do_not_prevent_dna_version_fallback(self):
+        for entries in (None, 123, [None, 123, {"MM ID0": 123}], [{"MM ID0": []}]):
+            with self.subTest(entries=entries):
+                miner = thermal.Miner("miner")
+                with patch.object(miner, "cmd", side_effect=[
+                    {"STATS": entries}, {"VERSION": [{"DNA": "ABCDEF"}]},
+                ]):
+                    self.assertEqual(miner.get_dna(), "abcdef")
+
+    def test_dna_summary_variant_and_invalid_version_dna(self):
+        miner = thermal.Miner("miner")
+        with patch.object(miner, "cmd", return_value={"STATS": [{"MM ID0:Summary": "DNA[ABCDEF]"}]}):
+            self.assertEqual(miner.get_dna(), "abcdef")
+        for dna in (123, "not-hex", None):
+            with self.subTest(dna=dna):
+                miner = thermal.Miner("miner")
+                with patch.object(miner, "cmd", side_effect=[{}, {"VERSION": [{"DNA": dna}]}]):
+                    self.assertIsNone(miner.get_dna())
+
+    def test_nontext_mm_payload_is_skipped(self):
+        miner = thermal.Miner("miner")
+        with patch.object(miner, "cmd", return_value={"STATS": [{"MM ID0": 123}]}):
+            self.assertEqual(miner.parse_stats("mini3"), {})
+
     def test_random_mini3_fields(self):
         rng = random.Random(1337)
         for _ in range(50):

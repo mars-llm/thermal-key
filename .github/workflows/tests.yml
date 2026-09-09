@@ -1,0 +1,33 @@
+name: Offline regression tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.14']
+    env:
+      TK_ALLOW_WRITE: '0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run hardware-free regression suite
+        run: ./scripts/test.sh --offline
+      - name: Check syntax
+        run: |
+          python -m py_compile thermal.py password.py tests/*.py
+          bash -n scripts/test.sh

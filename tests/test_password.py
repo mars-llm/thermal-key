@@ -1,12 +1,68 @@
 """Unit tests for bounded password recovery scheduling."""
 
 import io
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 import password
+
+
+class PasswordDeviceInfoTests(unittest.TestCase):
+    def test_spaced_uppercase_auth_and_q_dna_use_shared_client(self):
+        with patch("password.urllib.request.urlopen") as request, patch("thermal.Miner") as miner:
+            request.return_value.read.return_value = b'callback({ "auth" : "AABBCCDD" });'
+            miner.return_value.get_dna.return_value = "abcd"
+            self.assertEqual(password.fetch_device_info("miner"), ("aabbccdd", "abcd"))
+        miner.assert_called_once_with("miner", timeout=5)
+
+    def test_missing_device_dna_reports_a_clear_error(self):
+        with patch("password.urllib.request.urlopen") as request, patch("thermal.Miner") as miner:
+            request.return_value.read.return_value = b'{"auth":"aabbccdd"}'
+            miner.return_value.get_dna.return_value = None
+            with self.assertRaisesRegex(ValueError, "Failed to fetch DNA"):
+                password.fetch_device_info("miner")
+
+    def test_invalid_auth_is_rejected_before_dna_query(self):
+        with patch("password.urllib.request.urlopen") as request, patch("thermal.Miner") as miner:
+            request.return_value.read.return_value = b'{"auth":"not an auth hash"}'
+            with self.assertRaisesRegex(ValueError, "Could not parse auth"):
+                password.fetch_device_info("miner")
+            miner.assert_not_called()
+
+
+class StandalonePasswordTests(unittest.TestCase):
+    def run_standalone(self, *arguments):
+        with tempfile.TemporaryDirectory() as directory:
+            script = os.path.join(directory, "password.py")
+            shutil.copyfile(password.__file__, script)
+            return subprocess.run(
+                [sys.executable, "-I", "-S", script] + list(arguments),
+                cwd=directory,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+
+    def test_offline_recovery_runs_without_thermal_module(self):
+        result = self.run_standalone(
+            "--target", password.compute_auth("standalone-test", "abcd"),
+            "--dna", "abcd", "--mask", "standalone-test", "--workers", "1", "--batch-size", "1",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASSWORD FOUND: standalone-test", result.stdout)
+
+    def test_device_recovery_without_thermal_reports_dependency_before_network_access(self):
+        result = self.run_standalone("--device", "miner.invalid", "--mask", "test")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--device requires thermal.py beside password.py", result.stdout)
+        self.assertIn("--target and --dna", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 class _ImmediateFuture:

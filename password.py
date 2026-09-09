@@ -12,11 +12,9 @@ Performance: ~17M hashes/sec on M4 (6 chars alnum ~1hr, 8+ use GPU)
 
 import argparse
 import hashlib
-import json
 import multiprocessing
 import os
 import re
-import socket
 import sys
 import time
 import urllib.request
@@ -231,35 +229,28 @@ def count_mask_combinations(mask: str) -> int:
 def fetch_device_info(ip: str) -> Tuple[str, str]:
     """Fetch auth target and DNA from device."""
     try:
+        from thermal import Miner
+    except ImportError as exc:
+        raise ValueError(
+            "--device requires thermal.py beside password.py; "
+            "use --target and --dna for standalone offline recovery"
+        ) from exc
+
+    try:
         auth_url = f'http://{ip}/get_auth.cgi'
         response = urllib.request.urlopen(auth_url, timeout=5)
         auth_resp = response.read().decode()
-        auth_match = re.search(r'"auth":"([^"]+)"', auth_resp)
+        auth_match = re.search(r'"auth"\s*:\s*"([0-9a-fA-F]{8})"', auth_resp)
         if not auth_match:
             raise ValueError("Could not parse auth from get_auth.cgi")
-        auth = auth_match.group(1)
+        auth = auth_match.group(1).lower()
     except Exception as e:
         raise ValueError(f"Failed to fetch auth from {ip}: {e}") from e
 
     try:
-        sock = socket.socket()
-        sock.settimeout(5)
-        sock.connect((ip, 4028))
-        sock.send(json.dumps({'command': 'stats'}).encode())
-
-        data = b''
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-        sock.close()
-
-        stats_resp = data.decode().rstrip('\x00')
-        dna_match = re.search(r'DNA\[([^\]]+)\]', stats_resp)
-        if not dna_match:
-            raise ValueError("Could not parse DNA from stats")
-        dna = dna_match.group(1)
+        dna = Miner(ip, timeout=5).get_dna()
+        if not dna:
+            raise ValueError("Could not get DNA from stats or version")
     except Exception as e:
         raise ValueError(f"Failed to fetch DNA from {ip}:4028: {e}") from e
 

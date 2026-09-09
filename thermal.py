@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 import random
 import re
@@ -16,7 +17,7 @@ import time
 import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 # Work mode name mappings (0=Heater, 1=Mining, 2=Night)
@@ -83,6 +84,17 @@ READ_ONLY_COMMANDS = {
     "pools",
 }
 
+READ_ONLY_ASCSET_PARAMETERS = {
+    "0,help",
+    "0,voltage",
+    "0,workmode,get",
+    "0,worklevel,get",
+    "0,work_mode_lvl,get",
+    "0,loop,get",
+    "0,time,get",
+}
+MAX_API_RESPONSE_BYTES = 8 * 1024 * 1024
+
 _LOG_WARNED_PATHS = set()
 _LOG_WRITE_LOCK = threading.Lock()
 
@@ -138,8 +150,9 @@ def _parse_optional_float(value: Optional[str]) -> Optional[float]:
     if value is None:
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -159,17 +172,13 @@ def _to_int(value, default: Optional[int] = 0) -> Optional[int]:
         return default
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _to_float(value, default: Optional[float] = 0.0) -> Optional[float]:
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+    parsed = _parse_optional_float(value)
+    return default if parsed is None else parsed
 
 
 def _first_dict_entry(result: Optional[Dict], key: str) -> Optional[Dict]:
@@ -184,18 +193,15 @@ def _first_dict_entry(result: Optional[Dict], key: str) -> Optional[Dict]:
 
 def _status_msg(result: Optional[Dict]) -> str:
     status = _first_dict_entry(result, "STATUS")
-    return status.get("Msg", "") if status else ""
+    message = status.get("Msg") if status else None
+    return message if isinstance(message, str) else ""
 
 
 def _is_read_only_ascset(param: Optional[str]) -> bool:
     if not param:
         return False
     normalized = param.strip().lower()
-    return (
-        normalized == "0,help"
-        or normalized == "0,voltage"
-        or normalized.endswith(",get")
-    )
+    return normalized in READ_ONLY_ASCSET_PARAMETERS
 
 
 def is_retry_safe_command(command: str, param: Optional[str] = None) -> bool:
@@ -260,7 +266,9 @@ def _extract_reject_rate(summary: Dict, dev: Optional[Dict] = None) -> Optional[
     ):
         for key in keys:
             if key in entry:
-                return _to_float(entry.get(key), None)
+                value = _to_float(entry.get(key), None)
+                if value is not None and 0 <= value <= 100:
+                    return value
 
     difficulty_accepted = _to_float(summary.get("Difficulty Accepted"), None)
     difficulty_rejected = _to_float(summary.get("Difficulty Rejected"), None)
@@ -320,7 +328,7 @@ def parse_mm_id0(mm: str, temp_keys: Optional[List[str]] = None) -> Dict:
         if text is None:
             return None
         match = re.search(r"-?\d+(?:\.\d+)?", text)
-        return float(match.group(0)) if match else None
+        return _parse_optional_float(match.group(0)) if match else None
 
     def parse_int(text: Optional[str]) -> Optional[int]:
         value = parse_number(text)
@@ -339,7 +347,7 @@ def parse_mm_id0(mm: str, temp_keys: Optional[List[str]] = None) -> Dict:
     power_out: Optional[int] = None
     ps = get_field("PS")
     if ps:
-        parts = [_parse_optional_int(p) for p in re.findall(r"-?\d+", ps)]
+        parts = [_parse_optional_int(p) for p in re.findall(r"-?\d+(?:\.\d+)?", ps)]
         if len(parts) > 4 and parts[1] is not None and parts[4] is not None:
             power_in, power_out = parts[1], parts[4]
 
@@ -530,7 +538,7 @@ def evaluate_health(stats: Dict, baseline_hashrate: Optional[float] = None) -> D
 
     fan_rpms = [
         rpm
-        for rpm in (_to_int(value, None) for value in stats.get("fan_rpms", []))
+        for rpm in (_to_int(value, None) for value in (stats.get("fan_rpms") or []))
         if rpm is not None and rpm >= 0
     ]
     if len(fan_rpms) >= 2 and max(fan_rpms) > 0:
@@ -596,13 +604,18 @@ class HealthTracker:
         self.samples: Deque[float] = deque(maxlen=max(self.minimum_samples, window))
         self.mode_signature: Optional[Tuple[Any, Any]] = None
         self.baseline_hashrate: Optional[float] = None
+        self.last_uptime: Optional[int] = None
 
     def evaluate(self, stats: Dict) -> Dict[str, Any]:
         mode_signature = (stats.get("workmode"), stats.get("worklevel"))
-        if self.mode_signature is not None and mode_signature != self.mode_signature:
+        uptime = _to_int(stats.get("uptime"), None)
+        restarted = uptime is not None and self.last_uptime is not None and uptime < self.last_uptime
+        if restarted or (self.mode_signature is not None and mode_signature != self.mode_signature):
             self.samples.clear()
             self.baseline_hashrate = None
         self.mode_signature = mode_signature
+        if uptime is not None:
+            self.last_uptime = uptime
 
         if len(self.samples) >= self.minimum_samples:
             candidate = float(statistics.median(self.samples))
@@ -676,7 +689,7 @@ class Miner:
 
     def _retry_delay_seconds(self, retry_index: int) -> float:
         # Exponential backoff with a small cap to keep retries bounded.
-        base = (self.backoff_ms / 1000.0) * (2 ** max(0, retry_index))
+        base = (self.backoff_ms / 1000.0) * (2 ** min(16, max(0, retry_index)))
         capped = min(base, 5.0)
         if self.jitter_pct <= 0:
             return capped
@@ -706,6 +719,7 @@ class Miner:
         for attempt in range(1, max_attempts + 1):
             sock = None
             try:
+                deadline = time.monotonic() + self.timeout
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(self.timeout)
                 sock.connect((self.host, self.port))
@@ -714,26 +728,39 @@ class Miner:
                 if param:
                     payload["parameter"] = param
 
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout("command deadline exceeded")
+                sock.settimeout(remaining)
                 sock.sendall(json.dumps(payload).encode())
 
-                response = b""
+                response = bytearray()
                 while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise socket.timeout("response deadline exceeded")
+                    sock.settimeout(remaining)
                     try:
                         chunk = sock.recv(4096)
                         if not chunk:
                             break
-                        response += chunk
-                        if b"\x00" in response:
+                        frame, separator, _ = chunk.partition(b"\x00")
+                        response.extend(frame)
+                        if len(response) > MAX_API_RESPONSE_BYTES:
+                            raise ValueError("response exceeds size limit")
+                        if separator:
                             break
                     except socket.timeout:
                         break
 
-                parsed = json.loads(response.rstrip(b"\x00").decode())
+                parsed = json.loads(response.decode())
+                if not isinstance(parsed, dict):
+                    raise ValueError("response is not a JSON object")
                 if attempt > 1:
                     self._log_cmd_event("retry_success", command, attempt)
                 return parsed
 
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
                 if isinstance(exc, ConnectionRefusedError):
                     last_error = f"connection refused ({self.host}:{self.port})"
                 elif isinstance(exc, socket.timeout):
@@ -742,7 +769,7 @@ class Miner:
                     last_error = "connection reset"
                 elif isinstance(exc, socket.gaierror):
                     last_error = f"name resolution failed ({self.host})"
-                elif isinstance(exc, (UnicodeDecodeError, json.JSONDecodeError)):
+                elif isinstance(exc, (UnicodeDecodeError, ValueError)):
                     last_error = "invalid response"
                 else:
                     last_error = str(exc) or exc.__class__.__name__
@@ -774,11 +801,12 @@ class Miner:
         if self._dna:
             return self._dna
         stats = self.cmd("stats")
-        if not stats or "STATS" not in stats:
-            stats = {"STATS": []}
-        for stat in stats.get("STATS", []):
-            mm_payload = stat.get("MM ID0")
-            if not mm_payload:
+        entries = stats.get("STATS") if isinstance(stats, dict) else None
+        for stat in entries if isinstance(entries, list) else []:
+            if not isinstance(stat, dict):
+                continue
+            mm_payload = stat.get("MM ID0") or stat.get("MM ID0:Summary")
+            if not isinstance(mm_payload, str):
                 continue
             match = re.search(r'DNA\[([0-9a-fA-F]+)\]', mm_payload)
             if match:
@@ -788,7 +816,7 @@ class Miner:
         version_entry = _first_dict_entry(self.cmd("version"), "VERSION")
         if version_entry:
             dna = version_entry.get("DNA")
-            if dna:
+            if isinstance(dna, str) and re.fullmatch(r"[0-9a-fA-F]+", dna):
                 self._dna = dna.lower()
                 return self._dna
         return None
@@ -880,7 +908,7 @@ class Miner:
                 if not isinstance(stat, dict):
                     continue
                 mm_payload = stat.get("MM ID0") or stat.get("MM ID0:Summary")
-                if not mm_payload:
+                if not isinstance(mm_payload, str) or not mm_payload:
                     continue
                 temp_keys = DEVICE_TEMP_KEYS.get(device_key, DEFAULT_TEMP_KEYS)
                 return parse_mm_id0(mm_payload, temp_keys=temp_keys)
@@ -1027,7 +1055,7 @@ def do_status(m: Miner, args, compact: bool = False):
             )
         else:
             print(f"{m.host:<16} CONNECTED (no stats)")
-        return True
+        return bool(stats)
 
     display_prod = prod or "Avalon Miner"
     print(f"\n  {display_prod} @ {m.host}")
@@ -1095,7 +1123,7 @@ def do_status(m: Miner, args, compact: bool = False):
             for issue in health["issues"]:
                 print(f"             - {issue['message']}")
     print()
-    return True
+    return bool(stats)
 
 
 def do_pools(m: Miner, args):
@@ -1122,6 +1150,7 @@ def do_watch(m: Miner, args):
         prod = version_entry.get("PROD") or version_entry.get("MODEL") or version_entry.get("Model")
         device_key = device_key_from_product(prod)
     health_tracker = HealthTracker()
+    previous_line_width = 0
     print(f"Monitoring {m.host} (Ctrl+C to stop)\n")
     try:
         while True:
@@ -1149,11 +1178,21 @@ def do_watch(m: Miner, args):
                 temp = "UNKNOWN" if stats.get("temp") is None else f"{stats['temp']}C"
                 fan = "UNKNOWN" if stats.get("fan_pct") is None else f"{stats['fan_pct']}%"
                 power = "UNKNOWN" if stats.get("power_in") is None else f"{stats['power_in']}W"
-                print(
-                    f"\r[{timestamp}] {hashrate} | {temp} | Fan {fan} | {power} | "
+                line = (
+                    f"[{timestamp}] {hashrate} | {temp} | Fan {fan} | {power} | "
                     f"Mode {mode} | Health {health['status']} {health['score']} | "
-                    f"Up {fmt_uptime(stats.get('uptime'))}",
-                    end='',
+                    f"Up {fmt_uptime(stats.get('uptime'))}"
+                )
+                print("\r" + line.ljust(previous_line_width), end='', flush=True)
+                previous_line_width = len(line)
+            else:
+                timestamp = time.strftime("%H:%M:%S")
+                line = f"[{timestamp}] {m.host} | UNAVAILABLE (no current stats)"
+                print("\r" + line.ljust(previous_line_width), flush=True)
+                previous_line_width = 0
+                append_jsonl(
+                    getattr(args, "log_jsonl", None) or getattr(m, "log_jsonl", None),
+                    {"event": "watch_unavailable", "host": m.host, "command": "watch"},
                 )
             time.sleep(args.interval)
     except KeyboardInterrupt:
@@ -1166,7 +1205,11 @@ def do_reboot(m: Miner, args):
 
 
 def do_fan(m: Miner, args):
-    speed = -1 if args.speed == "auto" else int(args.speed)
+    try:
+        speed = -1 if args.speed == "auto" else int(args.speed)
+    except (TypeError, ValueError):
+        print_err("fan speed must be 15-100 or 'auto'")
+        return False
     if speed != -1 and not 15 <= speed <= 100:
         print_err("fan speed must be 15-100 or 'auto'")
         return False
@@ -1349,7 +1392,11 @@ def print_json_result(result: Optional[Dict]) -> bool:
     """Print result as JSON or error if no response."""
     if result:
         print(json.dumps(result, indent=2))
-        return True
+        statuses = result.get("STATUS", [])
+        return not any(
+            isinstance(status, dict) and status.get("STATUS") in {"E", "F"}
+            for status in (statuses if isinstance(statuses, list) else [])
+        )
     else:
         print_err("no response")
         return False
@@ -1408,6 +1455,33 @@ def is_mutating_command(args) -> bool:
     if args.cmd == "ascset":
         return not _is_read_only_ascset(args.param)
     return False
+
+
+class ThreadLocalOutput:
+    """Route output without letting workers replace process-global streams."""
+
+    def __init__(self, fallback):
+        self.fallback = fallback
+        self.local = threading.local()
+
+    def write(self, text):
+        return getattr(self.local, "stream", self.fallback).write(text)
+
+    def flush(self):
+        return getattr(self.local, "stream", self.fallback).flush()
+
+    def __getattr__(self, name):
+        return getattr(self.fallback, name)
+
+    @contextmanager
+    def capture(self):
+        previous = getattr(self.local, "stream", self.fallback)
+        stream = io.StringIO()
+        self.local.stream = stream
+        try:
+            yield stream
+        finally:
+            self.local.stream = previous
 
 
 def main():
@@ -1531,12 +1605,16 @@ Fleet management (multiple hosts):
     if args.parallel < 1:
         print("error: --parallel must be >= 1", file=sys.stderr)
         sys.exit(1)
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be 1-65535")
+    if args.cmd == "watch" and args.interval < 1:
+        parser.error("--interval must be >= 1")
 
     if not args.host:
         print("error: -H/--host required", file=sys.stderr)
         sys.exit(1)
 
-    hosts = parse_hosts(args.host)
+    hosts = list(dict.fromkeys(parse_hosts(args.host)))
     if not hosts:
         print("error: no valid hosts specified", file=sys.stderr)
         sys.exit(1)
@@ -1595,25 +1673,30 @@ Fleet management (multiple hosts):
     # Single host - simple execution
     if len(hosts) == 1:
         m = build_miner(hosts[0])
-        succeeded = cmds[args.cmd](m, args)
+        try:
+            succeeded = cmds[args.cmd](m, args)
+        except Exception as exc:
+            print_err(str(exc))
+            log_run_event(hosts[0], "failed", str(exc))
+            return 1
         if succeeded is False:
             log_run_event(hosts[0], "failed", "single-host command failed")
         else:
             log_run_event(hosts[0], "completed", "single-host run finished")
-        return
+        return 1 if succeeded is False else 0
 
     # Multiple hosts - parallel execution with fleet view
     if args.cmd == 'watch':
         print("error: watch command not supported with multiple hosts", file=sys.stderr)
         sys.exit(1)
 
-    def get_fleet_status(host: str) -> str:
+    def get_fleet_status(host: str) -> Tuple[str, bool]:
         """Get compact status line for a single host."""
         m = build_miner(host)
         version_entry = _first_dict_entry(m.cmd("version"), "VERSION")
         if not version_entry:
             log_run_event(host, "offline", "version probe failed")
-            return f"{host:<16} {'':>8}  OFFLINE"
+            return f"{host:<16} {'':>8}  OFFLINE", False
         prod = version_entry.get("PROD") or version_entry.get("MODEL") or version_entry.get("Model")
         dev = device_short_name(prod)
         stats = m.parse_stats(device_key_from_product(prod), version_entry=version_entry)
@@ -1628,31 +1711,33 @@ Fleet management (multiple hosts):
             health_text = f"{health['status']:<8} {health['score']:>3}"
             log_run_event(host, "ok", "status collected")
             return (f"{host:<16} {dev:>8}  {hashrate} TH/s  {temp}C  "
-                    f"{fan}%  {power}W  {mode}  {fmt_uptime(stats.get('uptime')):<10}  {health_text}")
+                    f"{fan}%  {power}W  {mode}  {fmt_uptime(stats.get('uptime')):<10}  {health_text}"), True
         log_run_event(host, "degraded", "connected without stats")
-        return f"{host:<16} {dev:>8}  CONNECTED (no stats)"
+        return f"{host:<16} {dev:>8}  CONNECTED (no stats)", False
 
-    def run_command_on_host(host: str) -> str:
+    stdout = ThreadLocalOutput(sys.stdout)
+    stderr = ThreadLocalOutput(sys.stderr)
+
+    def run_command_on_host(host: str) -> Tuple[str, bool]:
         """Run command on host and capture output."""
         m = build_miner(host)
-        out = io.StringIO()
-        err = io.StringIO()
-        try:
-            with redirect_stdout(out), redirect_stderr(err):
+        with stdout.capture() as out, stderr.capture() as err:
+            try:
                 succeeded = cmds[args.cmd](m, args)
-        except SystemExit:
-            succeeded = False
-        except Exception as e:
-            log_run_event(host, "failed", str(e))
-            return f"[{host}]\nerror: {e}\n"
+            except SystemExit:
+                succeeded = False
+            except Exception as exc:
+                print_err(str(exc))
+                succeeded = False
         result = out.getvalue()
         errors = err.getvalue()
-        if succeeded is False or errors.strip():
+        failed = succeeded is False
+        if failed:
             message = errors.strip().splitlines()[-1] if errors.strip() else "command reported failure"
             log_run_event(host, "failed", message)
         else:
             log_run_event(host, "ok", "command completed")
-        return f"[{host}]\n{result}{errors}" if result or errors else f"[{host}]\n"
+        return f"[{host}]\n{result}{errors}", not failed
 
     preflight_health = {host: True for host in hosts}
     if is_mutating_command(args) and not args.no_preflight:
@@ -1699,16 +1784,17 @@ Fleet management (multiple hosts):
                 try:
                     results[host] = future.result()
                 except Exception as e:
-                    results[host] = f"{host:<16} ERROR: {e}"
+                    results[host] = (f"{host:<16} ERROR: {e}", False)
+                    log_run_event(host, "failed", str(e))
 
         # Print in original order
         for host in hosts:
-            print(results.get(host, f"{host:<16} UNKNOWN"))
+            print(results[host][0])
         print()
     else:
         # Other commands - parallel fetch, ordered output
         results = {}
-        with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+        with redirect_stdout(stdout), redirect_stderr(stderr), ThreadPoolExecutor(max_workers=args.parallel) as executor:
             futures = {
                 executor.submit(run_command_on_host, host): host
                 for host in hosts
@@ -1719,15 +1805,18 @@ Fleet management (multiple hosts):
                 try:
                     results[host] = future.result()
                 except Exception as e:
-                    results[host] = f"[{host}]\nerror: {e}\n"
+                    results[host] = (f"[{host}]\nerror: {e}\n", False)
+                    log_run_event(host, "failed", str(e))
             for host in hosts:
                 if not preflight_health.get(host, True):
-                    results[host] = f"[{host}]\nskipped: preflight failed\n"
+                    results[host] = (f"[{host}]\nskipped: preflight failed\n", False)
 
         # Print in original order
         for host in hosts:
-            print(results.get(host, f"[{host}]\nUNKNOWN\n"))
+            print(results[host][0])
+
+    return 0 if all(succeeded for _, succeeded in results.values()) else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

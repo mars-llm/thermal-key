@@ -4,15 +4,8 @@ import unittest
 
 import thermal
 
-from tests.device_test_config import HOSTS, PORT, TIMEOUT, SKIP_OFFLINE, ALLOW_WRITE
+from tests.device_test_config import HOSTS, PORT, TIMEOUT, SKIP_OFFLINE
 import re
-
-
-def _status_ok(result):
-    if not result:
-        return False
-    status = result.get("STATUS", [{}])[0]
-    return status.get("STATUS") == "S"
 
 
 def _ascset_commands(miner):
@@ -238,57 +231,11 @@ class DeviceIntegrationTests(unittest.TestCase):
 
 
 class DeviceWriteSmokeTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        if not ALLOW_WRITE:
-            raise unittest.SkipTest("Set TK_ALLOW_WRITE=1 to enable write tests")
-        if not HOSTS:
-            raise unittest.SkipTest("No hosts configured")
-
-    def _miner(self, host):
-        return thermal.Miner(host, PORT, timeout=TIMEOUT)
-
-    def _require_online(self, host):
-        miner = self._miner(host)
-        ver = miner.cmd("version")
-        if not ver or "VERSION" not in ver:
-            msg = f"Host {host} offline or no version response"
-            if SKIP_OFFLINE:
-                raise unittest.SkipTest(msg)
-            self.fail(msg)
-        return miner
-
-    def _assert_status_success(self, result, label):
-        self.assertTrue(_status_ok(result), f"{label} failed: {result}")
-
-    def test_write_noop_commands(self):
-        for host in HOSTS:
-            with self.subTest(host=host):
-                miner = self._require_online(host)
-                ver = miner.cmd("version")
-                ver0 = ver["VERSION"][0] if ver and "VERSION" in ver and ver["VERSION"] else {}
-                prod = ver0.get("PROD") or ver0.get("MODEL") or ver0.get("Model")
-                stats = miner.parse_stats(thermal.device_key_from_product(prod), version_entry=ver0)
-                if not stats:
-                    self.fail("parse_stats returned empty; cannot run write tests")
-
-                freq = stats.get("freq", 0)
-                if freq > 0:
-                    cmd = f"0,frequency,{freq}:{freq}:{freq}:{freq}"
-                    self._assert_status_success(miner.ascset(cmd), "frequency")
-
-                workmode = stats.get("workmode", 1)
-                cmd = f"0,workmode,set,{workmode}"
-                self._assert_status_success(miner.ascset(cmd), "workmode")
-
-                worklevel = stats.get("worklevel", 0)
-                cmd = f"0,worklevel,set,{worklevel}"
-                self._assert_status_success(miner.ascset(cmd), "worklevel")
-
-                fan_pct = stats.get("fan_pct", 0)
-                if 15 <= fan_pct <= 100:
-                    cmd = f"0,fan-spd,{fan_pct}"
-                    self._assert_status_success(miner.ascset(cmd), "fan-spd")
+    def test_device_writes_require_verified_snapshot_and_restore(self):
+        self.skipTest(
+            "Device write tests are disabled: no verified state-preserving "
+            "snapshot/restore is available; TK_ALLOW_WRITE cannot enable them"
+        )
 
 
 if __name__ == "__main__":

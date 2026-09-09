@@ -118,6 +118,10 @@ For mutating multi-host commands, Thermal Key runs a `version` preflight by defa
 Use `--no-preflight` to disable this behavior.
 Mutating commands are not automatically replayed after an ambiguous network failure.
 
+Repeated host entries are executed only once.
+Exit code `1` means at least one target failed, was skipped by preflight, or returned no status metrics.
+Health warnings alone do not change the exit code.
+
 ## Fleet workflows
 
 ```bash

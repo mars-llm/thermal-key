@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
@@ -77,6 +78,84 @@ class RetryBehaviorTests(unittest.TestCase):
             delay = miner._retry_delay_seconds(0)
             self.assertGreaterEqual(delay, 0.08)
             self.assertLessEqual(delay, 0.12)
+
+    def test_high_retry_index_stays_bounded(self):
+        miner = thermal.Miner("miner", jitter_pct=0)
+        self.assertEqual(miner._retry_delay_seconds(100000), 5)
+
+
+class _ScriptedSocket(_SocketStub):
+    def __init__(self, chunks):
+        super().__init__()
+        self.chunks = iter(chunks)
+        self.closed = False
+        self.timeouts = []
+
+    def recv(self, _size):
+        chunk = next(self.chunks, b"")
+        if isinstance(chunk, Exception):
+            raise chunk
+        return chunk
+
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
+
+    def close(self):
+        self.closed = True
+
+
+class ApiFramingTests(unittest.TestCase):
+    def test_fragmented_response_stops_at_first_null(self):
+        sock = _ScriptedSocket([b'{"STAT', b'US":[]}\x00trailing bytes'])
+        with patch("thermal.socket.socket", return_value=sock):
+            self.assertEqual(thermal.Miner("miner").cmd("version"), {"STATUS": []})
+        self.assertTrue(sock.closed)
+
+    def test_complete_json_without_null_is_accepted_on_eof_or_timeout(self):
+        for end in (b"", thermal.socket.timeout()):
+            with self.subTest(end=end):
+                sock = _ScriptedSocket([b'{"STATUS":[]}', end])
+                with patch("thermal.socket.socket", return_value=sock):
+                    self.assertEqual(thermal.Miner("miner").cmd("version"), {"STATUS": []})
+                self.assertTrue(sock.closed)
+
+    def test_non_object_and_truncated_responses_are_retryable_for_reads(self):
+        for payload in (b'[]\x00', b'null\x00', b'42\x00', b'{"STATUS":'):
+            with self.subTest(payload=payload):
+                failed = _ScriptedSocket([payload])
+                healthy = _ScriptedSocket([b'{"STATUS":[]}\x00'])
+                with patch("thermal.socket.socket", side_effect=[failed, healthy]), patch("thermal.time.sleep"):
+                    result = thermal.Miner("miner", retries=1).cmd("version")
+                self.assertEqual(result, {"STATUS": []})
+                self.assertTrue(failed.closed)
+                self.assertTrue(healthy.closed)
+
+    def test_partial_mutating_response_is_not_replayed(self):
+        sock = _ScriptedSocket([b'{"STATUS":', thermal.socket.timeout()])
+        with patch("thermal.socket.socket", return_value=sock) as create, redirect_stderr(io.StringIO()):
+            result = thermal.Miner("miner", retries=3).ascset("0,reboot,1")
+        self.assertIsNone(result)
+        self.assertEqual(create.call_count, 1)
+        self.assertTrue(sock.closed)
+
+    def test_continuous_data_cannot_extend_response_deadline(self):
+        sock = _ScriptedSocket([b'{"STATUS":', b'[]'])
+        with patch("thermal.socket.socket", return_value=sock), patch(
+            "thermal.time.monotonic", side_effect=[0, 0, 0.25, 0.5, 1.1]
+        ), redirect_stderr(io.StringIO()):
+            result = thermal.Miner("miner", timeout=1).cmd("version")
+        self.assertIsNone(result)
+        self.assertTrue(sock.closed)
+        self.assertEqual(sock.timeouts, [1, 1, 0.75, 0.5])
+
+    def test_response_size_limit_closes_socket(self):
+        sock = _ScriptedSocket([b'{"large":"', b'01234567890123456789'])
+        with patch("thermal.socket.socket", return_value=sock), patch(
+            "thermal.MAX_API_RESPONSE_BYTES", 16
+        ), redirect_stderr(io.StringIO()):
+            result = thermal.Miner("miner").cmd("version")
+        self.assertIsNone(result)
+        self.assertTrue(sock.closed)
 
 
 class _PreflightMiner:
@@ -176,6 +255,101 @@ class PreflightTests(unittest.TestCase):
         for command in ("coin", "config", "devdetails", "edevs", "estats"):
             with self.subTest(command=command):
                 self.assertTrue(thermal.is_retry_safe_command(command))
+
+    def test_unknown_get_suffix_does_not_bypass_preflight_or_allow_retries(self):
+        for param in ("0,reboot,get", "0,unknown,get", "0,workmode,set,1,get", "0,loop,get,extra"):
+            with self.subTest(param=param):
+                self.assertFalse(thermal.is_retry_safe_command("ascset", param))
+        for param in (
+            "0,help", "0,voltage", "0,workmode,get", "0,worklevel,get",
+            "0,work_mode_lvl,get", "0,loop,get", "0,time,get",
+        ):
+            with self.subTest(param=param):
+                self.assertTrue(thermal.is_retry_safe_command("ascset", param))
+
+
+class FleetResultTests(unittest.TestCase):
+    def run_cli(self, *arguments):
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch.object(sys, "argv", ["thermal.py"] + list(arguments)), patch(
+            "thermal.Miner", _PreflightMiner
+        ), redirect_stdout(out), redirect_stderr(err):
+            result = thermal.main()
+            self.assertIs(sys.stdout, out)
+            self.assertIs(sys.stderr, err)
+        return result, out.getvalue(), err.getvalue()
+
+    def test_parallel_output_is_captured_per_host_and_streams_are_restored(self):
+        barrier = threading.Barrier(2)
+        alpha_completed = threading.Event()
+
+        def logged(_path, event):
+            if event.get("event") == "run" and event.get("host") == "alpha":
+                alpha_completed.set()
+
+        def command(miner, _args):
+            print(f"{miner.host} begin")
+            barrier.wait(timeout=5)
+            if miner.host == "beta":
+                self.assertTrue(alpha_completed.wait(timeout=5))
+            print(f"{miner.host} diagnostic", file=sys.stderr)
+            print(f"{miner.host} end")
+            return True
+
+        with patch("thermal.do_timezone", side_effect=command), patch("thermal.append_jsonl", side_effect=logged):
+            code, output, errors = self.run_cli("-H", "alpha,beta", "timezone")
+        self.assertEqual(errors, "")
+        self.assertEqual(
+            output,
+            "[alpha]\nalpha begin\nalpha end\nalpha diagnostic\n\n"
+            "[beta]\nbeta begin\nbeta end\nbeta diagnostic\n\n",
+        )
+        self.assertEqual(code, 0)
+
+    def test_failure_exit_codes_cover_single_fleet_and_preflight(self):
+        for arguments in (
+            ("-H", "offline", "status"),
+            ("-H", "alpha,offline", "status"),
+            ("-H", "alpha,offline", "fan", "80"),
+            ("-H", "alpha", "fan", "invalid"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.run_cli(*arguments)[0], 1)
+        self.assertEqual(self.run_cli("-H", "alpha,beta", "status")[0], 0)
+
+    def test_failed_handler_and_exception_are_propagated_in_fleet(self):
+        for outcome in (False, ValueError("invalid payload")):
+            with self.subTest(outcome=outcome):
+                with patch("thermal.do_timezone", side_effect=[True, outcome]):
+                    self.assertEqual(self.run_cli("-H", "alpha,beta", "timezone")[0], 1)
+
+    def test_duplicate_hosts_are_only_mutated_once(self):
+        _PreflightMiner.executed = []
+        code, _, _ = self.run_cli("-H", "alpha,beta,alpha", "fan", "80")
+        self.assertCountEqual(_PreflightMiner.executed, [("alpha", "0,fan-spd,80"), ("beta", "0,fan-spd,80")])
+        self.assertEqual(code, 0)
+
+    def test_missing_stats_is_not_a_successful_status_collection(self):
+        with patch.object(_PreflightMiner, "parse_stats", return_value={}):
+            self.assertEqual(self.run_cli("-H", "alpha", "status")[0], 1)
+            self.assertEqual(self.run_cli("-H", "alpha,beta", "status")[0], 1)
+
+    def test_raw_api_error_is_printed_but_not_reported_as_success(self):
+        for status in ("E", "F"):
+            with self.subTest(status=status), redirect_stdout(io.StringIO()):
+                self.assertFalse(thermal.print_json_result({"STATUS": [{"STATUS": status}]}))
+
+    def test_cli_rejects_invalid_port_and_poll_interval_before_connections(self):
+        for arguments in (("--port", "0", "status"), ("--port", "65536", "status"), ("watch", "-i", "0")):
+            with self.subTest(arguments=arguments):
+                with patch.object(sys, "argv", ["thermal.py", "-H", "alpha"] + list(arguments)), patch(
+                    "thermal.Miner"
+                ) as miner, redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        thermal.main()
+                self.assertEqual(raised.exception.code, 2)
+                miner.assert_not_called()
 
 
 class _LoggingMiner:
