@@ -163,6 +163,28 @@ class CliUnitTests(unittest.TestCase):
             thermal.do_fan(FakeMiner("192.168.0.10"), Args)
         self.assertIn("fan speed must be 15-100", err.getvalue())
 
+    def test_pools_rejects_malformed_entries_without_partial_output(self):
+        valid = {"POOL": 0, "Status": "Alive", "Accepted": 1, "URL": "example", "User": "worker"}
+        for invalid in (None, {}, {"POOL": 1, "Status": "Alive"}):
+            with self.subTest(invalid=invalid):
+                miner = FakeMiner("miner")
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(miner, "cmd", return_value={"POOLS": [valid, invalid]}), \
+                        redirect_stdout(out), redirect_stderr(err):
+                    self.assertFalse(thermal.do_pools(miner, object()))
+                self.assertEqual(out.getvalue(), "")
+                self.assertIn("invalid pool entry", err.getvalue())
+
+    def test_status_surfaces_incomplete_health_for_single_and_fleet(self):
+        for hosts in ("alpha", "alpha,beta"):
+            with self.subTest(hosts=hosts):
+                out = io.StringIO()
+                with patch.object(sys, "argv", ["thermal.py", "-H", hosts, "status"]), \
+                        patch("thermal.Miner", FakeMiner), redirect_stdout(out):
+                    self.assertEqual(thermal.main(), 0)
+                self.assertIn("UNKNOWN", out.getvalue())
+                self.assertNotIn("100/100 OK", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

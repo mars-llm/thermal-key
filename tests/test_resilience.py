@@ -62,6 +62,21 @@ class RetryBehaviorTests(unittest.TestCase):
         self.assertIsNotNone(result)
         sleep_mock.assert_called_once_with(0.1)
 
+    def test_failed_socket_is_closed_before_retry_backoff(self):
+        failed = _ScriptedSocket([b'invalid\x00'])
+        healthy = _ScriptedSocket([b'{"STATUS":[]}\x00'])
+
+        def check_closed(_delay):
+            self.assertTrue(failed.closed)
+
+        with patch("thermal.socket.socket", side_effect=[failed, healthy]), patch(
+            "thermal.time.sleep", side_effect=check_closed
+        ) as sleep_mock:
+            result = thermal.Miner("miner", retries=1, jitter_pct=0).cmd("version")
+        self.assertEqual(result, {"STATUS": []})
+        sleep_mock.assert_called_once()
+        self.assertTrue(healthy.closed)
+
     def test_mutating_command_is_not_replayed(self):
         miner = thermal.Miner("192.168.0.10", retries=3, backoff_ms=100, jitter_pct=0)
         with patch("thermal.socket.socket", return_value=_SocketStub(fail_connect=True)) as socket_mock, patch(
@@ -229,6 +244,27 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("[empty]\nskipped: preflight failed", out.getvalue())
         self.assertEqual(_PreflightMiner.executed, [("192.168.0.10", "0,fan-spd,80")])
 
+    def test_preflight_failure_is_isolated_to_the_affected_host(self):
+        class UnreliableMiner(_PreflightMiner):
+            def cmd(self, command, param=None):
+                if command == "version" and self.host == "raises":
+                    raise ValueError("bad response")
+                if command == "version" and self.host == "empty_entry":
+                    return {"VERSION": [{}]}
+                if command == "version" and self.host == "api_error":
+                    return {"VERSION": [{"PROD": "Avalon Q"}], "STATUS": [{"STATUS": "E"}]}
+                return super().cmd(command, param)
+
+        _PreflightMiner.executed = []
+        out = io.StringIO()
+        argv = ["thermal.py", "-H", "good,raises,empty_entry,api_error", "fan", "80"]
+        with patch.object(sys, "argv", argv), patch("thermal.Miner", UnreliableMiner), \
+                redirect_stdout(out), redirect_stderr(io.StringIO()):
+            self.assertEqual(thermal.main(), 1)
+        self.assertEqual(_PreflightMiner.executed, [("good", "0,fan-spd,80")])
+        for host in ("raises", "empty_entry", "api_error"):
+            self.assertIn(f"[{host}]\nskipped: preflight failed", out.getvalue())
+
     def test_raw_and_ascset_mutation_classification(self):
         class RawRead:
             cmd = "raw"
@@ -339,6 +375,63 @@ class FleetResultTests(unittest.TestCase):
         for status in ("E", "F"):
             with self.subTest(status=status), redirect_stdout(io.StringIO()):
                 self.assertFalse(thermal.print_json_result({"STATUS": [{"STATUS": status}]}))
+
+    def test_malformed_response_status_cannot_report_success(self):
+        for statuses in (None, [], {}, [None], [{}], [{"STATUS": []}], [{"STATUS": "W"}],
+                         [{"STATUS": "S"}, {"STATUS": "E"}]):
+            with self.subTest(statuses=statuses), redirect_stdout(io.StringIO()):
+                self.assertFalse(thermal.print_json_result({"STATUS": statuses}))
+        with redirect_stdout(io.StringIO()):
+            self.assertTrue(thermal.print_json_result({"SUMMARY": [{"Elapsed": 1}]}))
+            self.assertFalse(thermal.print_json_result({"SUMMARY": [{"Elapsed": 1}]}, require_status=True))
+            self.assertTrue(thermal.print_json_result({"STATUS": [{"STATUS": "I"}]}))
+
+    def test_raw_mutation_and_ascset_require_acknowledgment(self):
+        class Miner:
+            def cmd(self, *_args):
+                return {"result": "unconfirmed"}
+
+            def ascset(self, *_args):
+                return {"result": "unconfirmed"}
+
+        class RawArgs:
+            command = "restart"
+            param = None
+
+        class AscsetArgs:
+            param = "0,reboot,1"
+
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(thermal.do_raw(Miner(), RawArgs))
+            self.assertFalse(thermal.do_ascset(Miner(), AscsetArgs))
+
+    def test_command_handlers_reject_later_error_or_malformed_status(self):
+        for extra in ({"STATUS": "E"}, {}, None, {"STATUS": []}):
+            with self.subTest(extra=extra):
+                result = {"STATUS": [{"STATUS": "S", "Msg": "success"}, extra]}
+                with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                    self.assertFalse(thermal.check_result(result, "completed"))
+                    self.assertFalse(thermal._print_info_status(result, "completed"))
+                self.assertNotIn("ok:", out.getvalue())
+                self.assertIn("did not confirm", err.getvalue())
+
+    def test_web_auth_does_not_accept_a_later_error_status(self):
+        miner = thermal.Miner("miner")
+        credentials = {"auth": "a", "verify": "b", "cookie": "c"}
+        with patch.object(miner, "ascset", return_value={"STATUS": [{"STATUS": "S"}, {"STATUS": "E"}]}), \
+                patch("thermal.urllib.request.urlopen") as request:
+            self.assertIsNone(miner.web_auth("test", credentials))
+        request.assert_not_called()
+
+    def test_ascset_help_rejects_error_status(self):
+        for statuses in ([{"STATUS": "E", "Msg": "permission denied"}],
+                         [{"STATUS": "I", "Msg": "fan-spd"}, {"STATUS": "E"}]):
+            with self.subTest(statuses=statuses):
+                miner = _PreflightMiner("miner")
+                with patch.object(miner, "ascset", return_value={"STATUS": statuses}), \
+                        redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+                    self.assertFalse(thermal.do_help_ascset(miner, object()))
+                self.assertNotIn("Available ascset commands", out.getvalue())
 
     def test_cli_rejects_invalid_port_and_poll_interval_before_connections(self):
         for arguments in (("--port", "0", "status"), ("--port", "65536", "status"), ("watch", "-i", "0")):

@@ -26,7 +26,7 @@
 
 - Real-time status: hashrate, temperature, fan, power, uptime
 - Fleet control: run the same command across many IPs in parallel
-- Safe controls: reboot, fan, mode, frequency, pool switching
+- Miner controls: reboot, fan, mode, frequency, pool switching
 - Web UI auth tools: create auth cookies and retrieve hashes
 - Raw CGMiner access when you need full control
 
@@ -114,13 +114,17 @@ Use these global flags with any command:
 - `--log-jsonl PATH` append structured run events (schema version `1`)
 - `--show-secrets` print full auth/hash/cookie values (default is redacted)
 
-For mutating multi-host commands, Thermal Key runs a `version` preflight by default and skips unhealthy hosts.
+For mutating multi-host commands, Thermal Key runs a `version` preflight by default and skips hosts that do not respond successfully. This checks connectivity, not whether a setting is safe or supported.
 Use `--no-preflight` to disable this behavior.
 Mutating commands are not automatically replayed after an ambiguous network failure.
 
 Repeated host entries are executed only once.
 Exit code `1` means at least one target failed, was skipped by preflight, or returned no status metrics.
 Health warnings alone do not change the exit code.
+
+Health requires valid readings for hashrate, reject rate, hardware errors, temperature, fan RPM and error status, Wi-Fi signal, pool latency, and network failures. Missing or invalid readings produce an `UNKNOWN` status unless an observed warning or critical condition takes precedence. In either case, an incomplete assessment has no numeric score. `status` lists missing signals; health JSONL events include `missing_metrics` and a null `health_score`. Devices that do not expose every signal may therefore remain `UNKNOWN` even while mining normally.
+
+Hashrate drift needs a baseline. `watch` learns one from at least three positive samples and resets it after a mode change or detected reboot; a single `status` reading does not assess drift.
 
 ## Fleet workflows
 
@@ -154,6 +158,8 @@ python3 password.py -d IP -w wordlist.txt
 # add --show-secrets only if you need full hash/cookie output
 ```
 
+Recovery uses a truncated auth hash. A match is an unverified candidate, not proof of the original password. The candidate password is printed even without `--show-secrets`; protect terminal output accordingly. Wordlists must be UTF-8, and spaces within each line are preserved.
+
 ## Security notice
 
 The CGMiner API on port 4028 has no authentication. Anyone on your network can control your miner.
@@ -174,6 +180,8 @@ If devices are offline, you can skip them:
 ```bash
 TK_SKIP_OFFLINE=1 ./scripts/test.sh
 ```
+
+For a strictly hardware-free run, use `./scripts/test.sh --offline`.
 
 ## Website
 

@@ -98,7 +98,7 @@ class QSupportTests(unittest.TestCase):
         self.assertEqual(stats["power_in"], 1209)
         self.assertEqual(stats["voltage"], 2251)
         self.assertEqual(stats["power_out"], 166)
-        self.assertEqual(stats["freq"], 160)
+        self.assertIsNone(stats["freq"])
         self.assertEqual(stats["hw_errors"], 3)
         self.assertAlmostEqual(stats["reject_rate"], 1.5, places=2)
         self.assertIsNone(stats["device_dh_percent"])
@@ -168,8 +168,36 @@ class QSupportTests(unittest.TestCase):
         self.assertEqual(stats["hashrate"], 0)
         self.assertEqual(stats["hashrate_max"], 0)
         self.assertEqual(stats["uptime"], 0)
-        self.assertEqual(stats["freq"], 0)
+        self.assertIsNone(stats["freq"])
         self.assertIsNone(stats["temp"])
+
+    def test_fallback_does_not_invent_mode_or_level_when_reads_fail(self):
+        class MissingModeMiner(QApiMiner):
+            def ascset(self, param):
+                if param in {"0,work_mode_lvl,get", "0,workmode,get", "0,worklevel,get"}:
+                    return {"STATUS": [{"STATUS": "E", "Msg": "workmode 0 worklevel 0"}]}
+                return super().ascset(param)
+
+        stats = MissingModeMiner().parse_stats("q")
+        self.assertIsNone(stats["workmode"])
+        self.assertIsNone(stats["worklevel"])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertTrue(thermal.do_status(MissingModeMiner(), object()))
+        self.assertIn("Mode       UNKNOWN (level UNKNOWN)", out.getvalue())
+
+    def test_fallback_recovers_only_the_missing_mode_field(self):
+        class PartialModeMiner(QApiMiner):
+            def ascset(self, param):
+                if param == "0,work_mode_lvl,get":
+                    return {"STATUS": [{"STATUS": "I", "Msg": "workmode 0 worklevel invalid"}]}
+                if param == "0,worklevel,get":
+                    return {"STATUS": [{"STATUS": "I", "Msg": "worklevel 0"}]}
+                return super().ascset(param)
+
+        stats = PartialModeMiner().parse_stats("q")
+        self.assertEqual(stats["workmode"], 0)
+        self.assertEqual(stats["worklevel"], 0)
 
     def test_get_dna_falls_back_to_version(self):
         miner = QApiMiner()
@@ -211,6 +239,38 @@ class QSupportTests(unittest.TestCase):
 
         self.assertEqual(err.getvalue(), "")
         self.assertIn("Device", out.getvalue())
+
+    def test_qinfo_reports_incomplete_or_failed_details(self):
+        class IncompleteMiner(QApiMiner):
+            def ascset(self, param):
+                if param == "0,work_mode_lvl,get":
+                    return {"STATUS": [{"STATUS": "E", "Msg": "workmode 0 worklevel 0"}]}
+                return super().ascset(param)
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            self.assertFalse(thermal.do_qinfo(IncompleteMiner(), object()))
+        self.assertIn("Work       UNKNOWN (level UNKNOWN)", out.getvalue())
+        self.assertIn("incomplete qinfo response", err.getvalue())
+
+    def test_qinfo_accepts_zero_values_and_complete_details(self):
+        class ZeroQMiner(QApiMiner):
+            def ascset(self, param):
+                messages = {
+                    "0,work_mode_lvl,get": "workmode 0 worklevel 0",
+                    "0,loop,get": "LOOP[0]",
+                    "0,voltage": "PS[0 0 0 0 0]",
+                }
+                if param in messages:
+                    return {"STATUS": [{"STATUS": "I", "Msg": messages[param]}]}
+                return super().ascset(param)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertTrue(thermal.do_qinfo(ZeroQMiner(), object()))
+        self.assertIn("Heater (level 0)", out.getvalue())
+        self.assertIn("Loop       0", out.getvalue())
 
     def test_status_uses_model_when_prod_missing(self):
         class QModelStatusMiner:

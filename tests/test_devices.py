@@ -150,9 +150,13 @@ class DeviceIntegrationTests(unittest.TestCase):
                     self.assertGreaterEqual(stats["fan_pct"], 0)
                     self.assertLessEqual(stats["fan_pct"], 100)
                 health = thermal.evaluate_health(stats)
-                self.assertIn(health["status"], {"OK", "WARN", "CRITICAL"})
-                self.assertGreaterEqual(health["score"], 0)
-                self.assertLessEqual(health["score"], 100)
+                self.assertIn(health["status"], {"OK", "WARN", "CRITICAL", "UNKNOWN"})
+                if health["missing_metrics"]:
+                    self.assertIsNone(health["score"])
+                    self.assertNotEqual(health["status"], "OK")
+                else:
+                    self.assertGreaterEqual(health["score"], 0)
+                    self.assertLessEqual(health["score"], 100)
 
     def test_stats_parse_consistency_with_raw(self):
         for host in HOSTS:

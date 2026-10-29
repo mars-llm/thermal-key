@@ -55,13 +55,27 @@ class StandalonePasswordTests(unittest.TestCase):
             "--dna", "abcd", "--mask", "standalone-test", "--workers", "1", "--batch-size", "1",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("PASSWORD FOUND: standalone-test", result.stdout)
+        self.assertIn("AUTH HASH MATCH: standalone-test", result.stdout)
+        self.assertIn("truncated hash can collide", result.stdout)
+        self.assertIn("CANDIDATE CREDENTIALS (not verified)", result.stdout)
 
     def test_device_recovery_without_thermal_reports_dependency_before_network_access(self):
         result = self.run_standalone("--device", "miner.invalid", "--mask", "test")
         self.assertEqual(result.returncode, 1)
         self.assertIn("--device requires thermal.py beside password.py", result.stdout)
         self.assertIn("--target and --dna", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_invalid_utf8_wordlist_fails_without_a_traceback(self):
+        with tempfile.NamedTemporaryFile("wb") as wordlist:
+            wordlist.write(b"bad\xffcandidate\n")
+            wordlist.flush()
+            result = self.run_standalone(
+                "--target", "aaaaaaaa", "--dna", "abcd", "--wordlist", wordlist.name,
+                "--workers", "1", "--batch-size", "1",
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Input error", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
 
@@ -154,6 +168,52 @@ class PasswordSchedulingTests(unittest.TestCase):
             )
         self.assertIsNone(result)
         self.assertIn("Not found in 250 candidates", output.getvalue())
+
+    def test_wordlist_preserves_spaces_and_rejects_invalid_utf8(self):
+        with tempfile.NamedTemporaryFile("wb") as handle:
+            handle.write(b" leading\r\ntrailing \n  \n\nlast")
+            handle.flush()
+            self.assertEqual(list(password.read_wordlist(handle.name)), [" leading", "trailing ", "  ", "last"])
+        with tempfile.NamedTemporaryFile("wb") as handle:
+            handle.write(b"candidate\xff\n")
+            handle.flush()
+            with self.assertRaises(UnicodeDecodeError):
+                list(password.read_wordlist(handle.name))
+
+    def test_wordlist_recovery_finds_whitespace_candidate(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write(" leading \n")
+            handle.flush()
+            with patch("password.ProcessPoolExecutor", _ImmediateExecutor), patch(
+                "password.as_completed", _ordered_as_completed
+            ), redirect_stdout(io.StringIO()) as output:
+                result = password.crack_wordlist(
+                    password.compute_auth(" leading ", "abcd"), "abcd", handle.name,
+                    num_workers=1, batch_size=1,
+                )
+        self.assertEqual(result, " leading ")
+        self.assertIn("truncated hash can collide", output.getvalue())
+
+    def test_hybrid_counts_only_candidates_it_can_generate(self):
+        words = ["x" * 16, "y" * 15, "z" * 17]
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write("\n".join(words) + "\n")
+            handle.flush()
+            with patch("password.crack_generator") as crack:
+                password.crack_hybrid("ffffffff", "abcd", handle.name, 4, num_workers=1)
+        generated = list(crack.call_args.args[2])
+        self.assertEqual(crack.call_args.args[3], len(generated))
+        self.assertEqual(len(generated), 3 + len(password.CHARSET_DIGITS + password.CHARSET_SPECIAL_COMMON))
+
+    def test_match_with_zero_elapsed_time_does_not_crash(self):
+        with patch("password.ProcessPoolExecutor", _ImmediateExecutor), patch(
+            "password.as_completed", _ordered_as_completed
+        ), patch("password.time.time", return_value=1), redirect_stdout(io.StringIO()):
+            result = password.crack_generator(
+                password.compute_auth("match", "abcd"), "abcd", iter(["match"]),
+                num_workers=1, batch_size=1,
+            )
+        self.assertEqual(result, "match")
 
     def test_cli_rejects_zero_workers(self):
         err = io.StringIO()

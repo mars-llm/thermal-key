@@ -185,11 +185,9 @@ def generate_hybrid(words: List[str], suffix_len: int) -> Generator[str, None, N
 
     for word in words:
         yield word
-        for length in range(1, suffix_len + 1):
+        for length in range(1, min(suffix_len, 16 - len(word)) + 1):
             for suffix in product(suffix_chars, repeat=length):
-                candidate = word + ''.join(suffix)
-                if len(candidate) <= 16:
-                    yield candidate
+                yield word + ''.join(suffix)
 
 
 def generate_bruteforce(charset: str, max_len: int, min_len: int = 1) -> Generator[str, None, None]:
@@ -330,7 +328,7 @@ def crack_generator(
             result, batch_checked = future.result()
             checked += batch_checked
 
-            if result:
+            if result is not None:
                 found = result
                 break
 
@@ -355,15 +353,25 @@ def crack_generator(
     elapsed = time.time() - start_time
     print()
 
-    if found:
-        print(f"\n[+] PASSWORD FOUND: {found}")
+    if found is not None:
+        print(f"\n[+] AUTH HASH MATCH: {found}")
+        print("[!] The truncated hash can collide; verify the candidate before relying on it.")
         print(f"[+] Time: {elapsed:.2f}s")
-        print(f"[+] Rate: {checked/elapsed:,.0f}/s")
+        print(f"[+] Rate: {checked / elapsed if elapsed > 0 else 0:,.0f}/s")
         return found
     else:
         print(f"\n[-] Not found in {checked:,} candidates")
         print(f"[-] Time: {elapsed:.2f}s")
         return None
+
+
+def read_wordlist(wordlist_path: str) -> Generator[str, None, None]:
+    """Read UTF-8 candidates, removing line endings but preserving whitespace."""
+    with open(wordlist_path, 'r', encoding='utf-8') as handle:
+        for line in handle:
+            candidate = line[:-1] if line.endswith('\n') else line
+            if candidate:
+                yield candidate
 
 
 def crack_wordlist(
@@ -378,21 +386,16 @@ def crack_wordlist(
     """Dictionary attack using wordlist file."""
 
     def word_generator():
-        with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                password = line.strip()
-                if not password:
-                    continue
-                if use_rules:
-                    yield from apply_rules(password)
-                else:
-                    yield password
+        for candidate in read_wordlist(wordlist_path):
+            if use_rules:
+                yield from apply_rules(candidate)
+            else:
+                yield candidate
 
     print("[*] Counting wordlist...")
-    with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
-        line_count = sum(1 for _ in f)
+    line_count = sum(1 for _ in read_wordlist(wordlist_path))
 
-    total = line_count * (30 if use_rules else 1)
+    total = 0 if use_rules else line_count
     desc = f"Dictionary: {wordlist_path}" + (" +rules" if use_rules else "")
 
     return crack_generator(
@@ -439,16 +442,13 @@ def crack_hybrid(
     show_secrets: bool = False,
 ) -> Optional[str]:
     """Hybrid attack: wordlist + brute force suffix."""
-    words = []
-    with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
-        for line in f:
-            word = line.strip()
-            if word:
-                words.append(word)
+    words = list(read_wordlist(wordlist_path))
 
     suffix_chars = len(CHARSET_DIGITS + CHARSET_SPECIAL_COMMON)
-    suffix_combos = sum(suffix_chars**length for length in range(suffix_len + 1))
-    total = len(words) * suffix_combos
+    total = sum(
+        1 + sum(suffix_chars**length for length in range(1, min(suffix_len, 16 - len(word)) + 1))
+        for word in words
+    )
 
     return crack_generator(
         target,
@@ -496,7 +496,7 @@ def print_credentials(password: str, dna: str, show_secrets: bool = False) -> No
 
     print()
     print("=" * 60)
-    print("CREDENTIALS")
+    print("CANDIDATE CREDENTIALS (not verified)")
     print("=" * 60)
     print(f"Password: {password}")
     print(f"Auth:     {redact_secret(auth, show_secrets)}")
@@ -592,7 +592,7 @@ Examples:
         dna = args.dna.lower()
 
     if len(target) != 8 or not all(c in '0123456789abcdef' for c in target):
-        print(f"[-] Invalid auth format (expected 8 hex chars): {target}")
+        print("[-] Invalid auth format (expected 8 hex chars)")
         sys.exit(1)
 
     print()
@@ -633,7 +633,7 @@ Examples:
             args.show_secrets,
         )
 
-    if result:
+    if result is not None:
         print_credentials(result, dna, args.show_secrets)
         sys.exit(0)
     else:
@@ -646,4 +646,8 @@ Examples:
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (OSError, UnicodeError) as exc:
+        print(f"[-] Input error: {exc}", file=sys.stderr)
+        sys.exit(1)

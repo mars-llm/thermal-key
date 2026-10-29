@@ -542,8 +542,8 @@
         <span>Run the same command across many IPs at once.</span>
       </div>
       <div class="stat">
-        <strong>Safe controls</strong>
-        <span>Explicit guardrails for reboot, fan, mode, and frequency.</span>
+        <strong>Miner controls</strong>
+        <span>Adjust fan, mode, and frequency; reboot when needed.</span>
       </div>
       <div class="stat">
         <strong>Recovery tools</strong>
@@ -557,11 +557,11 @@
       <div class="feature-grid">
         <div class="feature">
           <h3>Monitor</h3>
-          <p>Pull normalized status data for Mini 3, Nano 3S, and Avalon Q miners, including temperature and power.</p>
+          <p>Check hashrate, temperature, and power. Missing readings make the health score unavailable; detected alerts still show.</p>
         </div>
         <div class="feature">
           <h3>Control</h3>
-          <p>Change fan speed, set mining modes, tune frequency, and reboot safely.</p>
+          <p>Change fan speed, set mining modes, tune frequency, and reboot. Check settings for your device first.</p>
         </div>
         <div class="feature">
           <h3>Automate</h3>
@@ -677,6 +677,7 @@ thermal.py -H IP ascset "0,..."</code>
         <span>The CGMiner API on port 4028 has no authentication. Anyone on your network can control your miner.</span>
         <span>Recommended: isolate miners on a VLAN, firewall port 4028, and use strong web UI passwords.</span>
         <span>Auth and recovery commands redact sensitive hashes/cookies by default. Use <code>--show-secrets</code> only when needed.</span>
+        <span>Recovery prints candidate passwords. A hash match does not prove the original password; verify it before relying on it.</span>
       </div>
     </section>
 

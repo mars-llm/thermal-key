@@ -39,6 +39,56 @@ class HealthScoreTests(unittest.TestCase):
         self.assertEqual(health["score"], 100)
         self.assertEqual(health["issues"], [])
         self.assertEqual(health["thermal_headroom"], 15)
+        self.assertEqual(health["missing_metrics"], [])
+
+    def test_empty_and_missing_health_signals_are_unknown(self):
+        empty = thermal.evaluate_health({})
+        self.assertEqual(empty["status"], "UNKNOWN")
+        self.assertIsNone(empty["score"])
+        self.assertEqual(len(empty["missing_metrics"]), 9)
+        for field, missing in (
+            ("hashrate", "hashrate"), ("reject_rate", "reject_rate"),
+            ("hw_errors", "hardware_errors"), ("fan_rpms", "fan_rpms"),
+            ("fan_error", "fan_error"), ("rssi", "rssi"),
+            ("ping_ms", "latency"), ("net_failures_total", "network_failures"),
+        ):
+            with self.subTest(field=field):
+                health = thermal.evaluate_health(_healthy_stats(**{field: None}))
+                self.assertEqual(health["status"], "UNKNOWN")
+                self.assertIsNone(health["score"])
+                self.assertIn(missing, health["missing_metrics"])
+        health = thermal.evaluate_health(_healthy_stats(temp=None, temp_max=None))
+        self.assertEqual(health["status"], "UNKNOWN")
+        self.assertIn("temperature", health["missing_metrics"])
+
+    def test_invalid_health_telemetry_cannot_report_ok(self):
+        for changes, missing in (
+            ({"hashrate": -1}, "hashrate"), ({"reject_rate": 101}, "reject_rate"),
+            ({"hw_errors": -1}, "hardware_errors"), ({"temp": 201, "temp_max": 201}, "temperature"),
+            ({"fan_rpms": [0, 0]}, "fan_rpms"), ({"fan_rpms": [1000, "bad"]}, "fan_rpms"),
+            ({"fan_error": -1}, "fan_error"), ({"rssi": 1}, "rssi"),
+            ({"ping_ms": -1}, "latency"), ({"net_failures_total": -1}, "network_failures"),
+        ):
+            with self.subTest(changes=changes):
+                health = thermal.evaluate_health(_healthy_stats(**changes))
+                self.assertNotEqual(health["status"], "OK")
+                self.assertIsNone(health["score"])
+                self.assertIn(missing, health["missing_metrics"])
+
+    def test_incomplete_telemetry_preserves_detected_alerts(self):
+        for reject_rate, expected in ((5, "WARN"), (20, "CRITICAL")):
+            with self.subTest(expected=expected):
+                health = thermal.evaluate_health(_healthy_stats(reject_rate=reject_rate, rssi=None))
+                self.assertEqual(health["status"], expected)
+                self.assertIsNone(health["score"])
+                self.assertIn("rssi", health["missing_metrics"])
+                self.assertEqual(health["issues"][0]["code"], "reject_rate")
+
+    def test_missing_raw_counters_do_not_default_to_zero(self):
+        stats = thermal.parse_mm_id0("GHSavg[1000] TMax[60]")
+        self.assertIsNone(stats["hw_errors"])
+        self.assertIsNone(stats["net_failures_total"])
+        self.assertNotEqual(thermal.evaluate_health(stats)["status"], "OK")
 
     def test_reject_rate_thresholds(self):
         warning = thermal.evaluate_health(_healthy_stats(reject_rate=5.0))
@@ -63,6 +113,28 @@ class HealthScoreTests(unittest.TestCase):
         shares = thermal._extract_reject_rate({"Accepted": 3, "Rejected": 1, "Stale": 1})
         self.assertAlmostEqual(difficulty, 10.0)
         self.assertAlmostEqual(shares, 20.0)
+
+    def test_reject_rate_rejects_invalid_counters_and_uses_valid_fallback(self):
+        for key in ("Difficulty Accepted", "Difficulty Rejected", "Difficulty Stale"):
+            for value in (-1, "nan", "invalid"):
+                with self.subTest(key=key, value=value):
+                    summary = {"Difficulty Accepted": 90, "Difficulty Rejected": 10,
+                               "Difficulty Stale": 0, "Accepted": 9, "Rejected": 1}
+                    summary[key] = value
+                    self.assertAlmostEqual(thermal._extract_reject_rate(summary), 10.0)
+        for key in ("Accepted", "Rejected", "Stale"):
+            with self.subTest(key=key):
+                summary = {"Accepted": 9, "Rejected": 1, "Stale": 0}
+                summary[key] = -1
+                self.assertIsNone(thermal._extract_reject_rate(summary))
+
+    def test_reject_rate_handles_large_counters_without_overflow(self):
+        self.assertAlmostEqual(
+            thermal._extract_reject_rate({"Accepted": 1e308, "Rejected": 1e308}),
+            50.0,
+        )
+        self.assertIsNone(thermal._extract_reject_rate({"Accepted": 0, "Rejected": 0}))
+        self.assertEqual(thermal._extract_reject_rate({"Accepted": 10, "Rejected": 0}), 0.0)
 
     def test_thermal_fan_and_network_faults_are_explained(self):
         health = thermal.evaluate_health(
@@ -179,6 +251,24 @@ class HealthScoreTests(unittest.TestCase):
             ["health", "watch_unavailable", "health"],
         )
 
+    def test_watch_displays_unknown_for_incomplete_health(self):
+        class Miner:
+            host = "miner"
+
+            def cmd(self, command):
+                return {"VERSION": [{"PROD": "Avalon Nano3s"}]}
+
+            def parse_stats(self, *args, **kwargs):
+                return _healthy_stats(rssi=None)
+
+        class Args:
+            interval = 1
+
+        output = io.StringIO()
+        with patch("thermal.time.sleep", side_effect=KeyboardInterrupt), redirect_stdout(output):
+            self.assertTrue(thermal.do_watch(Miner(), Args))
+        self.assertIn("Health UNKNOWN UNKNOWN", output.getvalue())
+
     def test_health_event_is_structured_json(self):
         stats = _healthy_stats()
         health = thermal.evaluate_health(stats)
@@ -193,6 +283,16 @@ class HealthScoreTests(unittest.TestCase):
         self.assertEqual(event["issue_codes"], [])
         self.assertEqual(event["reject_rate"], 1.0)
         self.assertEqual(event["device_dh_percent"], 20.0)
+        self.assertEqual(event["missing_metrics"], [])
+
+    def test_incomplete_health_event_records_null_score_and_missing_metrics(self):
+        stats = _healthy_stats(rssi=None)
+        with patch("thermal.append_jsonl") as log:
+            thermal.append_health_event("ignored", "miner", "status", thermal.evaluate_health(stats), stats)
+        event = log.call_args.args[1]
+        self.assertEqual(event["health_status"], "UNKNOWN")
+        self.assertIsNone(event["health_score"])
+        self.assertEqual(event["missing_metrics"], ["rssi"])
 
 
 if __name__ == "__main__":

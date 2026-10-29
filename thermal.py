@@ -197,6 +197,33 @@ def _status_msg(result: Optional[Dict]) -> str:
     return message if isinstance(message, str) else ""
 
 
+def _successful_status_msg(result: Optional[Dict]) -> str:
+    if not isinstance(result, dict) or not _valid_response_status(result, required=True):
+        return ""
+    return _status_msg(result)
+
+
+def _valid_response_status(result: Dict, required: bool = False) -> bool:
+    if "STATUS" not in result:
+        return not required
+    statuses = result["STATUS"]
+    return (isinstance(statuses, list) and bool(statuses) and all(
+        isinstance(status, dict) and status.get("STATUS") in ("S", "I")
+        for status in statuses
+    ))
+
+
+def _failure_status_msg(result: Dict) -> str:
+    statuses = result.get("STATUS")
+    if isinstance(statuses, list):
+        for status in statuses:
+            if isinstance(status, dict) and status.get("STATUS") not in ("S", "I"):
+                message = status.get("Msg")
+                if isinstance(message, str) and message:
+                    return message
+    return "device did not confirm command success"
+
+
 def _is_read_only_ascset(param: Optional[str]) -> bool:
     if not param:
         return False
@@ -229,10 +256,10 @@ def _extract_loop_value(msg: str) -> Optional[int]:
     return _to_int(match.group(1), 0)
 
 
-def _extract_work_mode_level(msg: str) -> Tuple[int, int]:
+def _extract_work_mode_level(msg: str) -> Tuple[Optional[int], Optional[int]]:
     mode_match = re.search(r"workmode\s+(\d+)", msg)
     level_match = re.search(r"worklevel\s+(\d+)", msg)
-    return _to_int(mode_match.group(1), 0) if mode_match else 0, _to_int(level_match.group(1), 0) if level_match else 0
+    return _to_int(mode_match.group(1), None) if mode_match else None, _to_int(level_match.group(1), None) if level_match else None
 
 
 def _hashrate_to_th(entry: Dict, key: str) -> Optional[float]:
@@ -270,19 +297,20 @@ def _extract_reject_rate(summary: Dict, dev: Optional[Dict] = None) -> Optional[
                 if value is not None and 0 <= value <= 100:
                     return value
 
-    difficulty_accepted = _to_float(summary.get("Difficulty Accepted"), None)
-    difficulty_rejected = _to_float(summary.get("Difficulty Rejected"), None)
-    difficulty_stale = _to_float(summary.get("Difficulty Stale"), 0.0)
-    if difficulty_accepted is not None and difficulty_rejected is not None:
-        total = difficulty_accepted + difficulty_rejected + (difficulty_stale or 0.0)
-        return difficulty_rejected / total * 100 if total > 0 else 0.0
-
-    accepted = _to_float(summary.get("Accepted"), None)
-    rejected = _to_float(summary.get("Rejected"), None)
-    stale = _to_float(summary.get("Stale"), 0.0)
-    if accepted is not None and rejected is not None:
-        total = accepted + rejected + (stale or 0.0)
-        return rejected / total * 100 if total > 0 else 0.0
+    for accepted_key, rejected_key, stale_key in (
+        ("Difficulty Accepted", "Difficulty Rejected", "Difficulty Stale"),
+        ("Accepted", "Rejected", "Stale"),
+    ):
+        accepted = _to_float(summary.get(accepted_key), None)
+        rejected = _to_float(summary.get(rejected_key), None)
+        stale = _to_float(summary.get(stale_key, 0), None)
+        if any(value is None or value < 0 for value in (accepted, rejected, stale)):
+            continue
+        scale = max(accepted, rejected, stale)
+        if scale == 0:
+            continue
+        total = accepted / scale + rejected / scale + stale / scale
+        return (rejected / scale) / total * 100
     return None
 
 
@@ -404,7 +432,7 @@ def parse_mm_id0(mm: str, temp_keys: Optional[List[str]] = None) -> Dict:
         else []
     )
     net_failures = [value for value in net_failures if value is not None]
-    net_failures_total = sum(net_failures) if net_failures else 0
+    net_failures_total = sum(net_failures) if net_failures and all(value >= 0 for value in net_failures) else None
     filter_value = parse_int(get_field("Filter"))
     memory_free_kb = parse_int(get_field("MEMFREE"))
     pf_count = parse_int(get_field("PFCnt"))
@@ -449,7 +477,7 @@ def parse_mm_id0(mm: str, temp_keys: Optional[List[str]] = None) -> Dict:
         "pf_count": pf_count,
         "workmode": workmode if workmode is not None else 1,
         "worklevel": worklevel if worklevel is not None else 0,
-        "hw_errors": hw_errors if hw_errors is not None else 0,
+        "hw_errors": hw_errors,
         "reject_rate": None,
         "device_dh_percent": device_dh_percent if device_dh_percent is not None else 0.0,
         "dna": dna,
@@ -467,6 +495,8 @@ def evaluate_health(stats: Dict, baseline_hashrate: Optional[float] = None) -> D
         score = max(0, score - HEALTH_SCORE_PENALTIES[code][severity])
 
     reject_rate = _to_float(stats.get("reject_rate"), None)
+    if reject_rate is not None and not 0 <= reject_rate <= 100:
+        reject_rate = None
     if reject_rate is not None:
         if reject_rate >= REJECT_RATE_CRITICAL_PERCENT:
             add_issue(
@@ -491,6 +521,8 @@ def evaluate_health(stats: Dict, baseline_hashrate: Optional[float] = None) -> D
             add_issue("hardware_errors", "warning", f"{hw_errors} hardware errors reported")
 
     current_hashrate = _to_float(stats.get("hashrate"), None)
+    if current_hashrate is not None and current_hashrate < 0:
+        current_hashrate = None
     hashrate_drop_pct = None
     if baseline_hashrate is not None and baseline_hashrate > 0 and current_hashrate is not None:
         hashrate_drop_pct = max(0.0, (baseline_hashrate - current_hashrate) / baseline_hashrate * 100)
@@ -507,9 +539,12 @@ def evaluate_health(stats: Dict, baseline_hashrate: Optional[float] = None) -> D
                 f"hashrate is {hashrate_drop_pct:.1f}% below the {baseline_hashrate:.2f} TH/s baseline",
             )
 
-    observed_temp = _to_float(stats.get("temp_max"), None)
-    if observed_temp is None:
-        observed_temp = _to_float(stats.get("temp"), None)
+    observed_temp = None
+    for key in ("temp_max", "temp"):
+        value = _to_float(stats.get(key), None)
+        if value is not None and -40 <= value <= 200:
+            observed_temp = value
+            break
     target_temp = _to_float(stats.get("target_temp"), None)
     thermal_headroom = None
     if observed_temp is not None and target_temp is not None:
@@ -536,9 +571,12 @@ def evaluate_health(stats: Dict, baseline_hashrate: Optional[float] = None) -> D
     if fan_error is not None and fan_error > 0:
         add_issue("fan_error", "critical", f"firmware reports fan error {fan_error}")
 
+    raw_fan_rpms = stats.get("fan_rpms")
+    if not isinstance(raw_fan_rpms, (list, tuple)):
+        raw_fan_rpms = []
     fan_rpms = [
         rpm
-        for rpm in (_to_int(value, None) for value in (stats.get("fan_rpms") or []))
+        for rpm in (_to_int(value, None) for value in raw_fan_rpms)
         if rpm is not None and rpm >= 0
     ]
     if len(fan_rpms) >= 2 and max(fan_rpms) > 0:
@@ -574,18 +612,36 @@ def evaluate_health(stats: Dict, baseline_hashrate: Optional[float] = None) -> D
         else:
             add_issue("network_failures", "warning", f"{net_failures} network failures recorded")
 
+    missing_metrics = []
+    for name, available in (
+        ("hashrate", current_hashrate is not None),
+        ("reject_rate", reject_rate is not None),
+        ("hardware_errors", hw_errors is not None and hw_errors >= 0),
+        ("temperature", observed_temp is not None),
+        ("fan_rpms", bool(fan_rpms) and len(fan_rpms) == len(raw_fan_rpms) and max(fan_rpms) > 0),
+        ("fan_error", fan_error is not None and fan_error >= 0),
+        ("rssi", rssi is not None and -127 <= rssi <= 0),
+        ("latency", ping_ms is not None and ping_ms >= 0),
+        ("network_failures", net_failures is not None and net_failures >= 0),
+    ):
+        if not available:
+            missing_metrics.append(name)
+
     has_critical = any(issue["severity"] == "critical" for issue in issues)
     if has_critical or score < MINIMUM_NONCRITICAL_HEALTH_SCORE:
         status = "CRITICAL"
     elif issues or score < MINIMUM_OK_HEALTH_SCORE:
         status = "WARN"
+    elif missing_metrics:
+        status = "UNKNOWN"
     else:
         status = "OK"
 
     return {
-        "score": score,
+        "score": None if missing_metrics else score,
         "status": status,
         "issues": issues,
+        "missing_metrics": missing_metrics,
         "baseline_hashrate": baseline_hashrate,
         "hashrate_drop_pct": hashrate_drop_pct,
         "thermal_headroom": thermal_headroom,
@@ -648,6 +704,7 @@ def append_health_event(
             "command": command,
             "health_status": health["status"],
             "health_score": health["score"],
+            "missing_metrics": health["missing_metrics"],
             "issue_codes": [issue["code"] for issue in health["issues"]],
             "baseline_hashrate": health.get("baseline_hashrate"),
             "hashrate_drop_pct": health.get("hashrate_drop_pct"),
@@ -718,6 +775,7 @@ class Miner:
 
         for attempt in range(1, max_attempts + 1):
             sock = None
+            retry_delay = None
             try:
                 deadline = time.monotonic() + self.timeout
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -775,11 +833,10 @@ class Miner:
                     last_error = str(exc) or exc.__class__.__name__
 
                 if attempt < max_attempts:
-                    delay = self._retry_delay_seconds(attempt - 1)
-                    self._log_cmd_event("retry", command, attempt, error=last_error, delay_ms=int(delay * 1000))
-                    time.sleep(delay)
-                    continue
-                print(f"error: {last_error}", file=sys.stderr)
+                    retry_delay = self._retry_delay_seconds(attempt - 1)
+                    self._log_cmd_event("retry", command, attempt, error=last_error, delay_ms=int(retry_delay * 1000))
+                else:
+                    print(f"error: {last_error}", file=sys.stderr)
             except Exception as exc:
                 last_error = str(exc)
                 print(f"error: {last_error}", file=sys.stderr)
@@ -789,6 +846,9 @@ class Miner:
                         sock.close()
                     except Exception:
                         pass
+            if retry_delay is not None:
+                time.sleep(retry_delay)
+                continue
             break
 
         self._log_cmd_event("command_error", command, max_attempts, error=last_error or "unknown")
@@ -844,19 +904,16 @@ class Miner:
                     hashrate_max = candidate if hashrate_max is None else max(hashrate_max, candidate)
 
         power_in = power_out = voltage = None
-        ps_msg = _status_msg(self.ascset("0,voltage"))
+        ps_msg = _successful_status_msg(self.ascset("0,voltage"))
         if "PS[" in ps_msg:
             power_in, voltage, power_out = _extract_ps_values(ps_msg)
 
-        workmode = worklevel = 0
-        work_msg = _status_msg(self.ascset("0,work_mode_lvl,get"))
-        if "workmode" in work_msg and "worklevel" in work_msg:
-            workmode, worklevel = _extract_work_mode_level(work_msg)
-        else:
-            workmode = _extract_work_mode_level(_status_msg(self.ascset("0,workmode,get")))[0]
-            worklevel = _extract_work_mode_level(_status_msg(self.ascset("0,worklevel,get")))[1]
-
-        freq = _extract_loop_value(_status_msg(self.ascset("0,loop,get")))
+        work_msg = _successful_status_msg(self.ascset("0,work_mode_lvl,get"))
+        workmode, worklevel = _extract_work_mode_level(work_msg)
+        if workmode is None:
+            workmode = _extract_work_mode_level(_successful_status_msg(self.ascset("0,workmode,get")))[0]
+        if worklevel is None:
+            worklevel = _extract_work_mode_level(_successful_status_msg(self.ascset("0,worklevel,get")))[1]
 
         if not version_entry:
             version_entry = _first_dict_entry(self.cmd("version"), "VERSION") or {}
@@ -879,20 +936,20 @@ class Miner:
             "fan_rpms": [],
             "fan_pct": None,
             "fan_error": None,
-            "freq": freq,
+            "freq": None,
             "voltage": voltage,
             "power_in": power_in,
             "power_out": power_out,
             "rssi": None,
             "ping_ms": None,
             "net_failures": [],
-            "net_failures_total": 0,
+            "net_failures_total": None,
             "filter_value": None,
             "memory_free_kb": None,
             "pf_count": None,
             "workmode": workmode,
             "worklevel": worklevel,
-            "hw_errors": _to_int(dev.get("Hardware Errors", summary.get("Hardware Errors", 0)), 0),
+            "hw_errors": _to_int(dev.get("Hardware Errors", summary.get("Hardware Errors")), None),
             "reject_rate": _extract_reject_rate(summary, dev),
             "device_dh_percent": None,
             "dna": (version_entry.get("DNA", "") or "").lower(),
@@ -955,7 +1012,7 @@ class Miner:
         creds = creds or self.compute_auth(password)
         auth_result = self.ascset(f"0,qr_auth,{creds['auth']},{creds['verify']}")
         auth_status = _first_dict_entry(auth_result, "STATUS")
-        if not auth_status or auth_status.get("STATUS") not in {"S", "I"}:
+        if not auth_status or not _valid_response_status(auth_result, required=True):
             return None
         try:
             resp = urllib.request.urlopen(f"http://{self.host}/is_login.cgi", timeout=5).read().decode()
@@ -1010,10 +1067,10 @@ def check_result(result: Optional[Dict], ok_msg: str) -> bool:
     if not status:
         print_err("no response")
         return False
-    if status.get("STATUS") == "S":
+    if status.get("STATUS") == "S" and _valid_response_status(result, required=True):
         print_ok(ok_msg)
         return True
-    print_err(status.get("Msg", "unknown error"))
+    print_err(_failure_status_msg(result))
     return False
 
 
@@ -1048,7 +1105,7 @@ def do_status(m: Miner, args, compact: bool = False):
             temp = fmt_unknown(stats.get("temp"), "3.0f", "UNK")
             fan = fmt_unknown(stats.get("fan_pct"), "3.0f", "UNK")
             power = fmt_unknown(stats.get("power_in"), "4.0f", " UNK")
-            health_text = f"{health['status']} {health['score']}" if health else "UNKNOWN"
+            health_text = f"{health['status']} {fmt_unknown(health['score'])}" if health else "UNKNOWN"
             print(
                 f"{m.host:<16} {hr} TH/s  {temp}C  {fan}%  {power}W  {mode}  "
                 f"{fmt_uptime(stats.get('uptime'))}  {health_text}"
@@ -1082,13 +1139,13 @@ def do_status(m: Miner, args, compact: bool = False):
         reject_text = "UNKNOWN" if reject_rate is None else f"{reject_rate:.1f}%"
         device_dh_percent = stats.get("device_dh_percent")
         dh_text = "UNKNOWN" if device_dh_percent is None else f"{device_dh_percent:.1f}%"
-        print(f"  Errors     {reject_text} reject, {stats['hw_errors']} HW, {dh_text} DH")
+        print(f"  Errors     {reject_text} reject, {fmt_unknown(stats['hw_errors'])} HW, {dh_text} DH")
         print(f"  Temp       {temp} (max {temp_max})")
         print(f"  Fan        {fan_rpm} RPM ({fan_pct})")
         eff_str = f"{efficiency:.1f} J/TH" if efficiency is not None else "N/A"
         print(f"  Power      {power_in} in, {power_out} out ({eff_str})")
         print(f"  Freq       {freq} @ {voltage}")
-        print(f"  Mode       {MODE_NAMES.get(stats['workmode'], '?')} (level {stats['worklevel']})")
+        print(f"  Mode       {MODE_NAMES.get(stats['workmode'], 'UNKNOWN')} (level {fmt_unknown(stats['worklevel'])})")
         print(f"  Uptime     {fmt_uptime(stats.get('uptime'))}")
         thermal_parts = []
         if stats.get("target_temp") is not None:
@@ -1119,9 +1176,11 @@ def do_status(m: Miner, args, compact: bool = False):
             print(f"  Network    {', '.join(network_parts)}")
 
         if health:
-            print(f"  Health     {health['score']}/100 {health['status']}")
+            print(f"  Health     {fmt_unknown(health['score'])}/100 {health['status']}")
             for issue in health["issues"]:
                 print(f"             - {issue['message']}")
+            if health["missing_metrics"]:
+                print(f"             - missing: {', '.join(health['missing_metrics'])}")
     print()
     return bool(stats)
 
@@ -1132,12 +1191,17 @@ def do_pools(m: Miner, args):
     if not isinstance(pool_entries, list):
         print_err("failed to get pools")
         return False
+    required = ("POOL", "Status", "Accepted", "URL", "User")
+    if any(not isinstance(pool, dict) or any(key not in pool or pool[key] is None for key in required)
+           for pool in pool_entries):
+        print_err("invalid pool entry")
+        return False
 
     print(f"\n{'ID':<3} {'Status':<10} {'Active':<7} {'Accepted':<10} URL")
     print("-" * 70)
     for p in pool_entries:
         active = "*" if p.get("Stratum Active") else ""
-        print(f"{p['POOL']:<3} {p['Status']:<10} {active:<7} {p['Accepted']:<10} {p['URL']}")
+        print(f"{str(p['POOL']):<3} {str(p['Status']):<10} {active:<7} {str(p['Accepted']):<10} {p['URL']}")
         print(f"    Worker: {p['User']}")
     print()
     return True
@@ -1180,7 +1244,7 @@ def do_watch(m: Miner, args):
                 power = "UNKNOWN" if stats.get("power_in") is None else f"{stats['power_in']}W"
                 line = (
                     f"[{timestamp}] {hashrate} | {temp} | Fan {fan} | {power} | "
-                    f"Mode {mode} | Health {health['status']} {health['score']} | "
+                    f"Mode {mode} | Health {health['status']} {fmt_unknown(health['score'])} | "
                     f"Up {fmt_uptime(stats.get('uptime'))}"
                 )
                 print("\r" + line.ljust(previous_line_width), end='', flush=True)
@@ -1267,10 +1331,10 @@ def do_qinfo(m: Miner, args):
         print_err("qinfo is only available for Avalon Q devices")
         return False
 
-    work_msg = _status_msg(m.ascset("0,work_mode_lvl,get"))
-    loop_msg = _status_msg(m.ascset("0,loop,get"))
-    ps_msg = _status_msg(m.ascset("0,voltage"))
-    tz_msg = _status_msg(m.ascset("0,time,get"))
+    work_msg = _successful_status_msg(m.ascset("0,work_mode_lvl,get"))
+    loop_msg = _successful_status_msg(m.ascset("0,loop,get"))
+    ps_msg = _successful_status_msg(m.ascset("0,voltage"))
+    tz_msg = _successful_status_msg(m.ascset("0,time,get"))
 
     mode, level = _extract_work_mode_level(work_msg)
     loop = _extract_loop_value(loop_msg)
@@ -1278,7 +1342,7 @@ def do_qinfo(m: Miner, args):
 
     print()
     print(f"  Device     {prod} @ {m.host}")
-    print(f"  Work       {MODE_NAMES.get(mode, mode)} (level {level})")
+    print(f"  Work       {MODE_NAMES.get(mode, fmt_unknown(mode))} (level {fmt_unknown(level)})")
     print(f"  Loop       {'UNKNOWN' if loop is None else loop}")
     power_in_text = "UNKNOWN" if power_in is None else f"{power_in}W"
     power_out_text = "UNKNOWN" if power_out is None else f"{power_out}W"
@@ -1287,6 +1351,9 @@ def do_qinfo(m: Miner, args):
     if tz_msg:
         print(f"  Timezone   {tz_msg.replace('ASC 0 set info: ', '')}")
     print()
+    if any(value is None for value in (mode, level, loop, power_in, voltage, power_out)):
+        print_err("incomplete qinfo response")
+        return False
     return True
 
 
@@ -1296,14 +1363,16 @@ def _print_info_status(result: Optional[Dict], ok_message: str = "") -> bool:
         print_err("no response")
         return False
     state = status.get("STATUS")
-    msg = status.get("Msg", "unknown error")
-    if state in {"S", "I"}:
+    msg = status.get("Msg")
+    if not isinstance(msg, str):
+        msg = "unknown error"
+    if state in ("S", "I") and _valid_response_status(result, required=True):
         if ok_message:
             print_ok(ok_message)
         else:
             print_ok(msg.replace("ASC 0 set info: ", ""))
         return True
-    print_err(msg)
+    print_err(_failure_status_msg(result))
     return False
 
 
@@ -1388,33 +1457,28 @@ def do_getauth(m: Miner, args):
         return False
 
 
-def print_json_result(result: Optional[Dict]) -> bool:
+def print_json_result(result: Optional[Dict], require_status: bool = False) -> bool:
     """Print result as JSON or error if no response."""
-    if result:
+    if isinstance(result, dict) and result:
         print(json.dumps(result, indent=2))
-        statuses = result.get("STATUS", [])
-        return not any(
-            isinstance(status, dict) and status.get("STATUS") in {"E", "F"}
-            for status in (statuses if isinstance(statuses, list) else [])
-        )
+        return _valid_response_status(result, required=require_status)
     else:
         print_err("no response")
         return False
 
 
 def do_raw(m: Miner, args):
-    return print_json_result(m.cmd(args.command, args.param))
+    return print_json_result(m.cmd(args.command, args.param), require_status=not is_retry_safe_command(args.command, args.param))
 
 
 def do_ascset(m: Miner, args):
-    return print_json_result(m.ascset(args.param))
+    return print_json_result(m.ascset(args.param), require_status=True)
 
 
 def do_help_ascset(m: Miner, args):
     result = m.ascset("0,help")
-    status = _first_dict_entry(result, "STATUS")
-    if status:
-        msg = status.get("Msg", "")
+    msg = _successful_status_msg(result)
+    if msg:
         # Strip prefix like "ASC 0 set info: "
         if ": " in msg:
             msg = msg.split(": ", 1)[1]
@@ -1708,7 +1772,7 @@ Fleet management (multiple hosts):
             temp = fmt_unknown(stats.get("temp"), "3.0f", "UNK")
             fan = fmt_unknown(stats.get("fan_pct"), "3.0f", "UNK")
             power = fmt_unknown(stats.get("power_in"), "4.0f", " UNK")
-            health_text = f"{health['status']:<8} {health['score']:>3}"
+            health_text = f"{health['status']:<8} {fmt_unknown(health['score']):>3}"
             log_run_event(host, "ok", "status collected")
             return (f"{host:<16} {dev:>8}  {hashrate} TH/s  {temp}C  "
                     f"{fan}%  {power}W  {mode}  {fmt_uptime(stats.get('uptime')):<10}  {health_text}"), True
@@ -1742,9 +1806,13 @@ Fleet management (multiple hosts):
     preflight_health = {host: True for host in hosts}
     if is_mutating_command(args) and not args.no_preflight:
         def preflight_host(host: str) -> Tuple[str, bool]:
-            miner = build_miner(host)
-            version_entry = _first_dict_entry(miner.cmd("version"), "VERSION")
-            healthy = version_entry is not None
+            try:
+                miner = build_miner(host)
+                result = miner.cmd("version")
+                version_entry = _first_dict_entry(result, "VERSION")
+                healthy = bool(version_entry) and _valid_response_status(result)
+            except Exception:
+                healthy = False
             append_jsonl(
                 args.log_jsonl,
                 {

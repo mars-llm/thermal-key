@@ -43,4 +43,5 @@ Generate a structured snapshot for comparing Mini 3 vs Nano 3S (and Q):
 
 Avalon Q validation
 
-- Follow docs/avalon-q.md for the current Avalon Q API profile and command checks.
+- Run `tests.test_q_support` for hardware-free Q parsing and command checks.
+- Set `TK_HOSTS` to the Q address when running the read-only device suite.
