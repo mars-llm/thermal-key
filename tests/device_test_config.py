@@ -3,8 +3,6 @@
 import os
 import re
 
-DEFAULT_HOSTS = ["192.168.130.132", "192.168.130.83"]
-
 
 def _parse_host_list(text):
     if not text:
@@ -31,7 +29,7 @@ def load_hosts():
         except OSError:
             pass
 
-    return hosts or list(DEFAULT_HOSTS)
+    return list(dict.fromkeys(hosts))
 
 
 def _env_bool(name, default=False):

@@ -13,9 +13,8 @@ Quick start
   - ./scripts/test.sh
 - Offline-only tests (no device integration imports or LAN access):
   - ./scripts/test.sh --offline
-- Run with default hosts (preconfigured in tests/device_test_config.py):
-  - 192.168.130.132 (Mini 3)
-  - 192.168.130.83 (Nano 3S)
+- Configure test targets with `TK_HOSTS` or `TK_HOSTS_FILE`.
+  Without configured targets, device integration tests skip.
 
 Environment variables
 

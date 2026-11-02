@@ -189,7 +189,7 @@ class _PreflightMiner:
                 return {"VERSION": []}
             return {
                 "VERSION": [
-                    {"PROD": "Avalon Mini3", "DNA": "0201000046d3803b", "MAC": "e0e1a93ed589", "LVERSION": "fw", "CGMiner": "4.11.1"}
+                    {"PROD": "Avalon Mini3", "DNA": "0000000000000001", "MAC": "020000000001", "LVERSION": "fw", "CGMiner": "4.11.1"}
                 ]
             }
         return {"STATUS": [{"STATUS": "S"}]}
@@ -216,7 +216,7 @@ class _PreflightMiner:
             "hw_errors": 0,
             "reject_rate": 1.0,
             "device_dh_percent": 1.0,
-            "dna": "0201000046d3803b",
+            "dna": "0000000000000001",
         }
 
 
@@ -455,11 +455,11 @@ class _LoggingMiner:
         if command == "version":
             return {
                 "VERSION": [
-                    {"PROD": "Avalon Mini3", "DNA": "0201000046d3803b", "MAC": "e0e1a93ed589", "LVERSION": "fw", "CGMiner": "4.11.1"}
+                    {"PROD": "Avalon Mini3", "DNA": "0000000000000001", "MAC": "020000000001", "LVERSION": "fw", "CGMiner": "4.11.1"}
                 ]
             }
         if command == "stats":
-            mm = "GHSavg[40000] GHSmm[41000] Elapsed[120] HBTemp[60] TMax[70] Fan1[2500] FanR[80%] SF0[500 520 540 560] ATA1[700-70-2100-492-20] PS[0 1200 2050 34 700 2050 737] WORKMODE[1] WORKLVL[0] HW[0] DH[1.0%] DNA[0201000046d3803b]"
+            mm = "GHSavg[40000] GHSmm[41000] Elapsed[120] HBTemp[60] TMax[70] Fan1[2500] FanR[80%] SF0[500 520 540 560] ATA1[700-70-2100-492-20] PS[0 1200 2050 34 700 2050 737] WORKMODE[1] WORKLVL[0] HW[0] DH[1.0%] DNA[0000000000000001]"
             return {"STATS": [{"MM ID0": mm}]}
         return {"STATUS": [{"STATUS": "S"}]}
 
@@ -468,7 +468,7 @@ class _LoggingMiner:
 
     def parse_stats(self, device_key=None, version_entry=None):
         return thermal.parse_mm_id0(
-            "GHSavg[40000] GHSmm[41000] Elapsed[120] HBTemp[60] TMax[70] Fan1[2500] FanR[80%] SF0[500 520 540 560] ATA1[700-70-2100-492-20] PS[0 1200 2050 34 700 2050 737] WORKMODE[1] WORKLVL[0] HW[0] DH[1.0%] DNA[0201000046d3803b]"
+            "GHSavg[40000] GHSmm[41000] Elapsed[120] HBTemp[60] TMax[70] Fan1[2500] FanR[80%] SF0[500 520 540 560] ATA1[700-70-2100-492-20] PS[0 1200 2050 34 700 2050 737] WORKMODE[1] WORKLVL[0] HW[0] DH[1.0%] DNA[0000000000000001]"
         )
 
 
@@ -534,7 +534,7 @@ class LoggingAndSecretsTests(unittest.TestCase):
 
             def compute_auth(self, _password):
                 return {
-                    "dna": "0201000046d3803b",
+                    "dna": "0000000000000001",
                     "auth": "aaaaaaaa",
                     "verify": "ff0000ee1234567890abcdef12345678",
                     "cookie": "aaaaaaaa1234567890abcdef12345678",
@@ -561,7 +561,7 @@ class LoggingAndSecretsTests(unittest.TestCase):
 
             def compute_auth(self, _password):
                 return {
-                    "dna": "0201000046d3803b",
+                    "dna": "0000000000000001",
                     "auth": "aaaaaaaa",
                     "verify": "ff0000ee1234567890abcdef12345678",
                     "cookie": "aaaaaaaa1234567890abcdef12345678",

@@ -23,6 +23,18 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 # Work mode name mappings (0=Heater, 1=Mining, 2=Night)
 MODE_NAMES = {0: "Heater", 1: "Mining", 2: "Night"}
 MODE_ABBREV = {0: "H", 1: "M", 2: "N"}
+Q_MODE_NAMES = {0: "Eco", 1: "Standard", 2: "Super"}
+Q_MODE_ABBREV = {0: "E", 1: "S", 2: "Su"}
+
+
+def mode_name(mode, device_key="mini3"):
+    names = Q_MODE_NAMES if device_key == "q" else MODE_NAMES
+    return names.get(mode, "UNKNOWN")
+
+
+def mode_abbreviation(mode, device_key="mini3"):
+    names = Q_MODE_ABBREV if device_key == "q" else MODE_ABBREV
+    return names.get(mode, "?")
 
 DEVICE_PROFILES = {
     "mini3": {"short": "Mini3", "label": "Avalon Mini 3"},
@@ -1100,7 +1112,7 @@ def do_status(m: Miner, args, compact: bool = False):
     if compact:
         # Single-line output for fleet view
         if stats:
-            mode = MODE_ABBREV.get(stats['workmode'], '?')
+            mode = mode_abbreviation(stats['workmode'], device_key)
             hr = fmt_unknown(stats.get("hashrate"), "6.1f", "   UNK")
             temp = fmt_unknown(stats.get("temp"), "3.0f", "UNK")
             fan = fmt_unknown(stats.get("fan_pct"), "3.0f", "UNK")
@@ -1145,7 +1157,7 @@ def do_status(m: Miner, args, compact: bool = False):
         eff_str = f"{efficiency:.1f} J/TH" if efficiency is not None else "N/A"
         print(f"  Power      {power_in} in, {power_out} out ({eff_str})")
         print(f"  Freq       {freq} @ {voltage}")
-        print(f"  Mode       {MODE_NAMES.get(stats['workmode'], 'UNKNOWN')} (level {fmt_unknown(stats['worklevel'])})")
+        print(f"  Mode       {mode_name(stats['workmode'], device_key)} (level {fmt_unknown(stats['worklevel'])})")
         print(f"  Uptime     {fmt_uptime(stats.get('uptime'))}")
         thermal_parts = []
         if stats.get("target_temp") is not None:
@@ -1237,7 +1249,7 @@ def do_watch(m: Miner, args):
                     stats,
                 )
                 timestamp = time.strftime("%H:%M:%S")
-                mode = MODE_ABBREV.get(stats['workmode'], '?')
+                mode = mode_abbreviation(stats['workmode'], device_key)
                 hashrate = "UNKNOWN" if stats.get("hashrate") is None else f"{stats['hashrate']:.1f} TH/s"
                 temp = "UNKNOWN" if stats.get("temp") is None else f"{stats['temp']}C"
                 fan = "UNKNOWN" if stats.get("fan_pct") is None else f"{stats['fan_pct']}%"
@@ -1288,7 +1300,10 @@ def do_freq(m: Miner, args):
 
 
 def do_mode(m: Miner, args):
-    return check_result(m.ascset(f"0,workmode,set,{args.mode}"), f"mode set to {MODE_NAMES.get(args.mode, args.mode)}")
+    ver = _first_dict_entry(m.cmd("version"), "VERSION") or {}
+    key = device_key_from_product(ver.get("PROD") or ver.get("MODEL") or ver.get("Model"))
+    label = mode_name(args.mode, key) if key != "unknown" else str(args.mode)
+    return check_result(m.ascset(f"0,workmode,set,{args.mode}"), f"mode set to {label}")
 
 
 def do_level(m: Miner, args):
@@ -1298,7 +1313,7 @@ def do_level(m: Miner, args):
 def do_work_mode_level(m: Miner, args):
     return check_result(
         m.ascset(f"0,work_mode_lvl,set,{args.mode},{args.level}"),
-        f"mode set to {MODE_NAMES.get(args.mode, args.mode)} (level {args.level})",
+        f"mode set to {mode_name(args.mode, 'q')} (level {args.level})",
     )
 
 
@@ -1342,7 +1357,7 @@ def do_qinfo(m: Miner, args):
 
     print()
     print(f"  Device     {prod} @ {m.host}")
-    print(f"  Work       {MODE_NAMES.get(mode, fmt_unknown(mode))} (level {fmt_unknown(level)})")
+    print(f"  Work       {mode_name(mode, 'q')} (level {fmt_unknown(level)})")
     print(f"  Loop       {'UNKNOWN' if loop is None else loop}")
     power_in_text = "UNKNOWN" if power_in is None else f"{power_in}W"
     power_out_text = "UNKNOWN" if power_out is None else f"{power_out}W"
@@ -1563,7 +1578,8 @@ Commands:
   reboot              Reboot device
   fan SPEED           Set fan (15-100 or 'auto')
   freq MHZ            Set chip frequency
-  mode MODE           Set mode (0=Heater, 1=Mining, 2=Night)
+  mode MODE           Set mode (Q: 0=Eco, 1=Standard, 2=Super;
+                      Mini 3: 0=Heater, 1=Mining, 2=Night)
   level N             Set performance level
   work-mode-level M L Set mode + level in one command (Avalon Q)
   voltage MV          Set PSU voltage in mV (Avalon Q: 2150-2600)
@@ -1618,11 +1634,11 @@ Fleet management (multiple hosts):
     fr = sub.add_parser('freq', help='Set frequency')
     fr.add_argument('freq', type=int, help='MHz')
     mo = sub.add_parser('mode', help='Set work mode')
-    mo.add_argument('mode', type=int, choices=[0, 1, 2], help='0=Heater, 1=Mining, 2=Night')
+    mo.add_argument('mode', type=int, choices=[0, 1, 2], help='Q: 0=Eco, 1=Standard, 2=Super; Mini 3: 0=Heater, 1=Mining, 2=Night')
     lv = sub.add_parser('level', help='Set performance level')
     lv.add_argument('level', type=int, help='Level')
     ml = sub.add_parser('work-mode-level', help='Set mode and level together (Avalon Q)')
-    ml.add_argument('mode', type=int, choices=[0, 1, 2], help='0=Heater, 1=Mining, 2=Night')
+    ml.add_argument('mode', type=int, choices=[0, 1, 2], help='0=Eco, 1=Standard, 2=Super')
     ml.add_argument('level', type=int, help='Level')
     vo = sub.add_parser('voltage', help='Set PSU voltage (Avalon Q)')
     vo.add_argument('mv', type=int, help='2150-2600 mV')
@@ -1767,7 +1783,7 @@ Fleet management (multiple hosts):
         if stats:
             health = evaluate_health(stats)
             append_health_event(args.log_jsonl, host, "status", health, stats)
-            mode = MODE_ABBREV.get(stats['workmode'], '?')
+            mode = mode_abbreviation(stats['workmode'], device_key_from_product(prod))
             hashrate = fmt_unknown(stats.get("hashrate"), "6.1f", "   UNK")
             temp = fmt_unknown(stats.get("temp"), "3.0f", "UNK")
             fan = fmt_unknown(stats.get("fan_pct"), "3.0f", "UNK")

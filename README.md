@@ -91,7 +91,7 @@ python3 thermal.py -H 192.168.1.100 watch
 | Live view | `thermal.py -H IP watch` | Real-time monitoring |
 | Pools | `thermal.py -H IP pools` | List pool configuration |
 | Fan | `thermal.py -H IP fan 80` | 15-100 or `auto` |
-| Mode | `thermal.py -H IP mode 1` | 0=Heater, 1=Mining, 2=Night |
+| Mode | `thermal.py -H IP mode 1` | Q: 0=Eco, 1=Standard, 2=Super; Mini 3: 0=Heater, 1=Mining, 2=Night |
 | Frequency | `thermal.py -H IP freq 500` | MHz setting |
 | Mode + level | `thermal.py -H IP work-mode-level 1 2` | Avalon Q combined control |
 | Voltage | `thermal.py -H IP voltage 2250` | Avalon Q PSU voltage (2150-2600 mV) |
@@ -103,6 +103,16 @@ python3 thermal.py -H 192.168.1.100 watch
 | Auth | `thermal.py -H IP auth PASSWORD` | Web UI auth cookie (redacted by default) |
 | Recovery | `thermal.py -H IP getauth` | Retrieve auth hash |
 | Raw API | `thermal.py -H IP raw COMMAND` | CGMiner API passthrough |
+
+## JSON telemetry
+
+`python3 telemetry.py --host 192.0.2.10` reads one Avalon Q snapshot using
+`version`, `litestats`, and `summary`. The JSON schema includes firmware/API
+versions, hash rate in TH/s, uptime in minutes, work mode, operating state,
+temperatures, four fan speeds, fan percentage, and share/error counters.
+Unavailable optional measurements are `null`; a failed required response exits
+with code 1. Each request has a configurable timeout and is sent once.
+This command does not change device settings.
 
 ## Reliability and safety flags
 

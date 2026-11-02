@@ -12,7 +12,7 @@ class QApiMiner(thermal.Miner):
     """Mock miner with Avalon Q-like payloads (no MM ID0 in stats)."""
 
     def __init__(self):
-        super().__init__("192.168.130.53", 4028, timeout=5)
+        super().__init__("192.0.2.30", 4028, timeout=5)
 
     def cmd(self, command, param=None):
         if command == "stats":
@@ -52,7 +52,7 @@ class QApiMiner(thermal.Miner):
                 ]
             }
         if command == "version":
-            return {"VERSION": [{"PROD": "Avalon Q", "DNA": "020100003b70fee3"}]}
+            return {"VERSION": [{"PROD": "Avalon Q", "DNA": "0000000000000002"}]}
         return {"STATUS": [{"STATUS": "S"}]}
 
     def ascset(self, param):
@@ -102,14 +102,14 @@ class QSupportTests(unittest.TestCase):
         self.assertEqual(stats["hw_errors"], 3)
         self.assertAlmostEqual(stats["reject_rate"], 1.5, places=2)
         self.assertIsNone(stats["device_dh_percent"])
-        self.assertEqual(stats["dna"], "020100003b70fee3")
+        self.assertEqual(stats["dna"], "0000000000000002")
 
     def test_parse_stats_prefers_q_estats_telemetry(self):
         class ExtendedQMiner(QApiMiner):
             def cmd(self, command, param=None):
                 if command == "estats":
                     mm = (
-                        "Ver[Q-live] DNA[020100003b70fee3] Elapsed[2435] "
+                        "Ver[Q-live] DNA[0000000000000002] Elapsed[2435] "
                         "ITemp[26] HBITemp[58] HBOTemp[62] TMax[70] TAvg[63] TarT[65] "
                         "Fan1[1415] Fan2[1417] Fan3[1411] Fan4[1408] FanR[41%] FanErr[0] "
                         "PS[0 1208 2150 33 731 2151 810] GHSmm[65948.76] "
@@ -201,10 +201,10 @@ class QSupportTests(unittest.TestCase):
 
     def test_get_dna_falls_back_to_version(self):
         miner = QApiMiner()
-        self.assertEqual(miner.get_dna(), "020100003b70fee3")
+        self.assertEqual(miner.get_dna(), "0000000000000002")
 
     def test_web_auth_parses_spaced_jsonp(self):
-        miner = thermal.Miner("192.168.130.53")
+        miner = thermal.Miner("192.0.2.30")
 
         class _Resp:
             def read(self):
@@ -269,16 +269,16 @@ class QSupportTests(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertTrue(thermal.do_qinfo(ZeroQMiner(), object()))
-        self.assertIn("Heater (level 0)", out.getvalue())
+        self.assertIn("Eco (level 0)", out.getvalue())
         self.assertIn("Loop       0", out.getvalue())
 
     def test_status_uses_model_when_prod_missing(self):
         class QModelStatusMiner:
-            host = "192.168.130.53"
+            host = "192.0.2.30"
 
             def cmd(self, command, param=None):
                 if command == "version":
-                    return {"VERSION": [{"MODEL": "Avalon Q", "DNA": "020100003b70fee3", "LVERSION": "fw", "CGMiner": "4.11.1"}]}
+                    return {"VERSION": [{"MODEL": "Avalon Q", "DNA": "0000000000000002", "LVERSION": "fw", "CGMiner": "4.11.1"}]}
                 return None
 
             def parse_stats(self, device_key=None, version_entry=None):
@@ -292,12 +292,12 @@ class QSupportTests(unittest.TestCase):
         with redirect_stdout(out):
             thermal.do_status(QModelStatusMiner(), Args)
 
-        self.assertIn("Avalon Q @ 192.168.130.53", out.getvalue())
+        self.assertIn("Avalon Q @ 192.0.2.30", out.getvalue())
 
     def test_watch_recovers_after_initial_version_failure(self):
         class FlakyVersionMiner:
             def __init__(self):
-                self.host = "192.168.130.53"
+                self.host = "192.0.2.30"
                 self.version_calls = 0
                 self.device_keys = []
 

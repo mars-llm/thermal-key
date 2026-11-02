@@ -14,6 +14,10 @@ from tests import device_test_config
 
 
 class DeviceTestConfigTests(unittest.TestCase):
+    def test_no_hosts_without_configuration(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(device_test_config.load_hosts(), [])
+
     def tearDown(self):
         importlib.reload(device_test_config)
 

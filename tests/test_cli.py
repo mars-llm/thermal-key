@@ -11,7 +11,7 @@ import thermal
 
 
 def _make_mm(
-    dna="0201000046d3803b",
+    dna="0000000000000001",
     ghsavg="40051.26",
     ghsmm="39978.70",
     elapsed="12345",
@@ -67,8 +67,8 @@ class FakeMiner:
                         "HWTYPE": "M_MM1v1_X1",
                         "SWTYPE": "MM319",
                         "LVERSION": "25022401_cb28ba7",
-                        "DNA": "0201000046d3803b",
-                        "MAC": "e0e1a93ed589",
+                        "DNA": "0000000000000001",
+                        "MAC": "020000000001",
                     }
                 ]
             }

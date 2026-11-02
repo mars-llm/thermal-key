@@ -197,7 +197,7 @@ class ParseNano3sProperties(unittest.TestCase):
             "NETFAIL": "0 0 0 0",
             "MEMFREE": "64748",
             "PFCnt": "2",
-            "DNA": "0201000073d19147",
+            "DNA": "0000000000000003",
         }
         stats = thermal.parse_mm_id0(_build_mm(fields))
         self.assertEqual(stats["power_in"], 62)
@@ -228,7 +228,7 @@ class ParseNano3sProperties(unittest.TestCase):
             "WORKLEVEL": "0",
             "HW": "0",
             "DH": "0.000%",
-            "DNA": "0201000073d19147",
+            "DNA": "0000000000000003",
         }
         mm = _build_mm(fields)
         stats = thermal.parse_mm_id0(mm)

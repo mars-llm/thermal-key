@@ -24,8 +24,8 @@ class RecordingMiner:
                 "VERSION": [
                     {
                         "PROD": "Avalon Mini3",
-                        "DNA": "0201000046d3803b",
-                        "MAC": "e0e1a93ed589",
+                        "DNA": "0000000000000001",
+                        "MAC": "020000000001",
                         "LVERSION": "25022401_cb28ba7",
                         "CGMiner": "4.11.1",
                     }
@@ -55,7 +55,7 @@ class RecordingMiner:
             "hw_errors": 0,
             "reject_rate": 1.0,
             "device_dh_percent": 1.0,
-            "dna": "0201000046d3803b",
+            "dna": "0000000000000001",
         }
 
 

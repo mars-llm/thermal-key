@@ -518,11 +518,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s -d 192.168.130.132 -w default-passwords.txt
-  %(prog)s -d 192.168.130.132 -w rockyou.txt --rules
-  %(prog)s -d 192.168.130.132 -w words.txt --hybrid 4
-  %(prog)s -d 192.168.130.132 --mask "?d?d?l?l?l?l?d?d?d?d?s?s"
-  %(prog)s -d 192.168.130.132 --bruteforce --max-len 6
+  %(prog)s -d 192.0.2.10 -w default-passwords.txt
+  %(prog)s -d 192.0.2.10 -w rockyou.txt --rules
+  %(prog)s -d 192.0.2.10 -w words.txt --hybrid 4
+  %(prog)s -d 192.0.2.10 --mask "?d?d?l?l?l?l?d?d?d?d?s?s"
+  %(prog)s -d 192.0.2.10 --bruteforce --max-len 6
         """
     )
 

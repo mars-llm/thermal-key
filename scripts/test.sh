@@ -10,6 +10,7 @@ test_modules=(
   tests.test_device_test_config
   tests.test_parse_properties
   tests.test_q_support
+  tests.test_telemetry
 )
 
 if [[ $# -eq 0 ]]; then
