@@ -29,5 +29,5 @@ jobs:
         run: ./scripts/test.sh --offline
       - name: Check syntax
         run: |
-          python -m py_compile thermal.py password.py tests/*.py
+          python -m py_compile thermal.py telemetry.py password.py tests/*.py
           bash -n scripts/test.sh

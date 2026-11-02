@@ -557,7 +557,7 @@
       <div class="feature-grid">
         <div class="feature">
           <h3>Monitor</h3>
-          <p>Check hashrate, temperature, and power. Missing readings make the health score unavailable; detected alerts still show.</p>
+          <p>Check hashrate, temperature, and power. Read-only JSON snapshots are available for Avalon Q. Missing readings make the health score unavailable; detected alerts still show.</p>
         </div>
         <div class="feature">
           <h3>Control</h3>
@@ -654,12 +654,19 @@ thermal.py -H IP getauth</code>
         </div>
         <div class="command">
           <h4>Avalon Q Controls</h4>
+          <p>Q modes: 0 = Eco, 1 = Standard, 2 = Super.</p>
           <code>thermal.py -H IP work-mode-level 1 2
 thermal.py -H IP voltage 2250
 thermal.py -H IP solo on
 thermal.py -H IP loop
 thermal.py -H IP timezone
 thermal.py -H IP qinfo</code>
+        </div>
+        <div class="command">
+          <h4>Avalon Q JSON Telemetry</h4>
+          <p>Hashrate, uptime in minutes, temperatures, fans, work mode, and share counters. Missing optional readings are null.</p>
+          <code>python3 telemetry.py --host IP
+python3 telemetry.py --host IP --timeout 3</code>
         </div>
         <div class="command">
           <h4>Raw API</h4>
