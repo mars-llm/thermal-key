@@ -89,6 +89,14 @@ class TelemetryTests(unittest.TestCase):
                     client.miner.cmd(command, param)
                 send.assert_not_called()
 
+    def test_read_only_miner_refuses_command_submission_before_transport(self):
+        miner = telemetry.ReadOnlyMiner("miner.example")
+        for command, param in (("restart", None), ("ascset", "0,softoff,1"), ("summary", "extra")):
+            with self.subTest(command=command), patch("thermal.socket.socket") as sock:
+                with self.assertRaises(telemetry.TelemetryError):
+                    miner.submit_command(command, param)
+                sock.assert_not_called()
+
     def test_client_stops_at_first_failed_or_wrong_model_response(self):
         for response in (None, {"STATUS": [{"STATUS": "E"}]},
                          {"STATUS": [{"STATUS": "S"}], "VERSION": [{"PROD": "Avalon Mini3"}]}):

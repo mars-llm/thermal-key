@@ -21,10 +21,18 @@ class TelemetryError(Exception):
 
 
 class ReadOnlyMiner(Miner):
-    def cmd(self, command, param=None):
+    @staticmethod
+    def _require_telemetry_read(command, param):
         if command not in {"version", "litestats", "summary"} or param is not None:
             raise TelemetryError("Unsupported telemetry command")
+
+    def cmd(self, command, param=None):
+        self._require_telemetry_read(command, param)
         return super().cmd(command)
+
+    def submit_command(self, command, param=None):
+        self._require_telemetry_read(command, param)
+        return super().submit_command(command)
 
 
 def _entry(response, section):

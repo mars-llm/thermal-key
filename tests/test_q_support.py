@@ -6,9 +6,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 import thermal
+from tests.command_stub import StubCommandSubmission
 
 
-class QApiMiner(thermal.Miner):
+class QApiMiner(StubCommandSubmission, thermal.Miner):
     """Mock miner with Avalon Q-like payloads (no MM ID0 in stats)."""
 
     def __init__(self):
@@ -204,7 +205,8 @@ class QSupportTests(unittest.TestCase):
         self.assertEqual(miner.get_dna(), "0000000000000002")
 
     def test_web_auth_parses_spaced_jsonp(self):
-        miner = thermal.Miner("192.0.2.30")
+        miner = QApiMiner()
+        creds = {"auth": "a" * 8, "verify": "b" * 32, "cookie": "fallback-cookie"}
 
         class _Resp:
             def read(self):
@@ -213,12 +215,27 @@ class QSupportTests(unittest.TestCase):
         with patch.object(
             thermal.Miner,
             "compute_auth",
-            return_value={"auth": "a", "verify": "b", "cookie": "fallback-cookie"},
-        ), patch.object(thermal.Miner, "ascset", return_value={"STATUS": [{"STATUS": "S"}]}), patch(
+            return_value=creds,
+        ), patch.object(miner, "ascset", return_value={"STATUS": [{"STATUS": "I"}]}) as submit_auth, patch(
             "urllib.request.urlopen", return_value=_Resp()
         ):
             cookie = miner.web_auth("dummy-password")
+        submit_auth.assert_called_once_with(f"0,qr_auth,{creds['auth']},{creds['verify']}")
         self.assertEqual(cookie, "aaaabbbbccccdddd")
+
+    def test_web_auth_does_not_print_rejected_auth_parameters(self):
+        miner = thermal.Miner("miner.example")
+        creds = {"auth": "c" * 8, "verify": "d" * 32, "cookie": "fallback-cookie"}
+        param = f"0,qr_auth,{creds['auth']},{creds['verify']}"
+        rejection = {"STATUS": [{"STATUS": "E", "Msg": f"rejected parameter: {param}"}]}
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(miner, "_exchange_once", return_value=rejection) as exchange, \
+                patch("urllib.request.urlopen") as request, redirect_stdout(out), redirect_stderr(err):
+            self.assertIsNone(miner.web_auth("dummy-password", creds))
+        exchange.assert_called_once_with("ascset", param)
+        request.assert_not_called()
+        for marker in (creds["auth"], creds["verify"]):
+            self.assertNotIn(marker, out.getvalue() + err.getvalue())
 
     def test_qinfo_accepts_model_only_version_entry(self):
         class QModelOnlyMiner(QApiMiner):

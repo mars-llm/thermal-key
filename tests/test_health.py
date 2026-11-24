@@ -209,6 +209,118 @@ class HealthScoreTests(unittest.TestCase):
         self.assertNotIn("hashrate_drift", {issue["code"] for issue in health["issues"]})
         self.assertEqual(list(tracker.samples), [10])
 
+    def test_tracker_pauses_during_missing_known_mode_and_resumes(self):
+        for missing in ("workmode", "worklevel"):
+            with self.subTest(missing=missing):
+                tracker = thermal.HealthTracker()
+                for _ in range(4):
+                    tracker.evaluate(_healthy_stats(hashrate=100))
+                self.assertEqual(tracker.state, thermal.BaselineState.TRACKING)
+                samples = list(tracker.samples)
+                health = tracker.evaluate(_healthy_stats(hashrate=60, **{missing: None}))
+                self.assertEqual(tracker.state, thermal.BaselineState.UNCERTAIN)
+                self.assertEqual(health["baseline_state"], "uncertain")
+                self.assertEqual(health["status"], "UNKNOWN")
+                self.assertIsNone(health["score"])
+                self.assertIn("baseline_context", health["missing_metrics"])
+                self.assertIsNone(health["baseline_hashrate"])
+                self.assertNotIn("hashrate_drift", {issue["code"] for issue in health["issues"]})
+                self.assertEqual(list(tracker.samples), samples)
+                self.assertEqual(tracker.baseline_hashrate, 100)
+                recovered = tracker.evaluate(_healthy_stats(hashrate=60))
+                self.assertEqual(tracker.state, thermal.BaselineState.TRACKING)
+                self.assertEqual(recovered["baseline_hashrate"], 100)
+                self.assertIn("hashrate_drift", {issue["code"] for issue in recovered["issues"]})
+
+    def test_tracker_uncertainty_pauses_calibration_and_resumes(self):
+        tracker = thermal.HealthTracker()
+        tracker.evaluate(_healthy_stats(hashrate=100))
+        tracker.evaluate(_healthy_stats(hashrate=200, worklevel=None))
+        self.assertEqual(tracker.state, thermal.BaselineState.UNCERTAIN)
+        self.assertEqual(list(tracker.samples), [100])
+        tracker.evaluate(_healthy_stats(hashrate=100))
+        self.assertEqual(tracker.state, thermal.BaselineState.CALIBRATING)
+        self.assertEqual(list(tracker.samples), [100, 100])
+
+    def test_uncertain_baseline_preserves_warning_and_critical(self):
+        for reject_rate, expected in ((5, "WARN"), (20, "CRITICAL")):
+            with self.subTest(expected=expected):
+                tracker = thermal.HealthTracker()
+                tracker.evaluate(_healthy_stats())
+                health = tracker.evaluate(_healthy_stats(workmode=None, reject_rate=reject_rate))
+                self.assertEqual(health["status"], expected)
+                self.assertIsNone(health["score"])
+                self.assertIn("baseline_context", health["missing_metrics"])
+
+    def test_tracker_resets_when_mode_change_is_confirmed_after_missing(self):
+        tracker = thermal.HealthTracker()
+        for _ in range(4):
+            tracker.evaluate(_healthy_stats(hashrate=100))
+        health = tracker.evaluate(_healthy_stats(hashrate=60, workmode=None, fan_error=1))
+        self.assertEqual(health["status"], "CRITICAL")
+        self.assertIn("fan_error", {issue["code"] for issue in health["issues"]})
+        tracker.evaluate(_healthy_stats(hashrate=60, workmode=2))
+        self.assertEqual(tracker.state, thermal.BaselineState.CALIBRATING)
+        self.assertIsNone(tracker.baseline_hashrate)
+        self.assertEqual(list(tracker.samples), [60])
+
+    def test_tracker_resets_on_change_or_reboot_during_uncertainty(self):
+        for change in ({"workmode": 2, "worklevel": None, "uptime": 120},
+                       {"workmode": 1, "worklevel": None, "uptime": 1}):
+            with self.subTest(change=change):
+                tracker = thermal.HealthTracker()
+                for uptime in (100, 105, 110, 115):
+                    tracker.evaluate(_healthy_stats(hashrate=100, uptime=uptime))
+                tracker.evaluate(_healthy_stats(hashrate=60, **change))
+                self.assertEqual(tracker.state, thermal.BaselineState.UNCERTAIN)
+                self.assertIsNone(tracker.baseline_hashrate)
+                self.assertEqual(list(tracker.samples), [])
+                confirmed = tracker.evaluate(_healthy_stats(
+                    hashrate=60, workmode=change["workmode"], uptime=change["uptime"] + 1
+                ))
+                self.assertEqual(tracker.state, thermal.BaselineState.CALIBRATING)
+                self.assertIsNone(confirmed["baseline_hashrate"])
+                self.assertEqual(list(tracker.samples), [60])
+
+    def test_tracker_accepts_persistently_unavailable_mode_components(self):
+        for missing in (("workmode",), ("worklevel",)):
+            with self.subTest(missing=missing):
+                tracker = thermal.HealthTracker()
+                missing_values = {name: None for name in missing}
+                for _ in range(4):
+                    tracker.evaluate(_healthy_stats(hashrate=100, **missing_values))
+                self.assertEqual(tracker.state, thermal.BaselineState.TRACKING)
+                self.assertEqual(tracker.baseline_hashrate, 100)
+                # A newly available component changes the signature and requires recalibration.
+                tracker.evaluate(_healthy_stats(hashrate=60))
+                self.assertEqual(tracker.state, thermal.BaselineState.CALIBRATING)
+                self.assertIsNone(tracker.baseline_hashrate)
+
+    def test_tracker_does_not_train_without_any_mode_component(self):
+        tracker = thermal.HealthTracker()
+        for _ in range(5):
+            health = tracker.evaluate(_healthy_stats(hashrate=100, workmode=None, worklevel=None))
+            self.assertEqual(tracker.state, thermal.BaselineState.UNCERTAIN)
+            self.assertIsNone(health["baseline_hashrate"])
+        self.assertEqual(list(tracker.samples), [])
+        tracker.evaluate(_healthy_stats(hashrate=60, worklevel=None))
+        self.assertEqual(tracker.state, thermal.BaselineState.CALIBRATING)
+        self.assertEqual(list(tracker.samples), [60])
+
+    def test_mm_mode_missing_is_not_fabricated_and_pauses_tracker(self):
+        known = thermal.parse_mm_id0("GHSavg[100000] WORKMODE[1] WORKLVL[0]")
+        missing = thermal.parse_mm_id0("GHSavg[60000] WORKMODE[1]")
+        self.assertIsNone(missing["worklevel"])
+        self.assertIsNone(thermal.parse_mm_id0("GHSavg[60000]")["workmode"])
+        tracker = thermal.HealthTracker()
+        for _ in range(4):
+            tracker.evaluate(known)
+        self.assertEqual(tracker.baseline_hashrate, 100)
+        health = tracker.evaluate(missing)
+        self.assertEqual(tracker.state, thermal.BaselineState.UNCERTAIN)
+        self.assertIsNone(health["baseline_hashrate"])
+        self.assertEqual(tracker.evaluate(known)["baseline_hashrate"], 100)
+
     def test_invalid_reject_percentage_falls_back_to_valid_counters(self):
         for value in (None, "not a number", "nan", "inf", -1, 101):
             with self.subTest(value=value):
@@ -269,6 +381,40 @@ class HealthScoreTests(unittest.TestCase):
             self.assertTrue(thermal.do_watch(Miner(), Args))
         self.assertIn("Health UNKNOWN UNKNOWN", output.getvalue())
 
+    def test_watch_reports_baseline_state_and_uncertainty_in_jsonl(self):
+        class Miner:
+            host = "miner"
+
+            def cmd(self, command):
+                return {"VERSION": [{"PROD": "Avalon Nano3s"}]}
+
+            def parse_stats(self, *args, **kwargs):
+                return next(self.snapshots)
+
+        class Args:
+            interval = 1
+            log_jsonl = "watch.jsonl"
+
+        miner = Miner()
+        miner.snapshots = iter([_healthy_stats(hashrate=100)] * 4 + [
+            _healthy_stats(hashrate=60, worklevel=None), _healthy_stats(hashrate=100)
+        ])
+        output = io.StringIO()
+        with patch("thermal.time.sleep", side_effect=[None] * 5 + [KeyboardInterrupt]), patch(
+            "thermal.append_jsonl"
+        ) as log, redirect_stdout(output):
+            self.assertTrue(thermal.do_watch(miner, Args))
+        events = [call.args[1] for call in log.call_args_list]
+        self.assertEqual([event["baseline_state"] for event in events],
+                         ["calibrating"] * 3 + ["tracking", "uncertain", "tracking"])
+        self.assertEqual(events[0]["health_status"], "OK")
+        self.assertEqual(events[4]["health_status"], "UNKNOWN")
+        self.assertIsNone(events[4]["health_score"])
+        self.assertEqual(events[4]["missing_metrics"], ["baseline_context"])
+        self.assertIn("Baseline calibrating", output.getvalue())
+        self.assertIn("Health UNKNOWN UNKNOWN | Baseline uncertain", output.getvalue())
+        self.assertIn("Baseline tracking", output.getvalue())
+
     def test_health_event_is_structured_json(self):
         stats = _healthy_stats()
         health = thermal.evaluate_health(stats)
@@ -284,6 +430,7 @@ class HealthScoreTests(unittest.TestCase):
         self.assertEqual(event["reject_rate"], 1.0)
         self.assertEqual(event["device_dh_percent"], 20.0)
         self.assertEqual(event["missing_metrics"], [])
+        self.assertNotIn("baseline_state", event)
 
     def test_incomplete_health_event_records_null_score_and_missing_metrics(self):
         stats = _healthy_stats(rssi=None)

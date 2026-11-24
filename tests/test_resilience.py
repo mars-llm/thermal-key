@@ -11,6 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 import thermal
+from tests.command_stub import StubCommandSubmission
 
 
 class _SocketStub:
@@ -119,6 +120,153 @@ class _ScriptedSocket(_SocketStub):
         self.closed = True
 
 
+class _OutcomeSocket(_ScriptedSocket):
+    def __init__(self, chunks=(), connect_error=None, send_error=None):
+        super().__init__(chunks)
+        self.connect_error = connect_error
+        self.send_error = send_error
+        self.send_calls = 0
+
+    def sendall(self, _payload):
+        self.send_calls += 1
+        if self.send_error:
+            raise self.send_error
+
+
+class CommandOutcomeTests(unittest.TestCase):
+    def test_raw_unexpected_parameter_and_compound_command_are_not_retried(self):
+        for raw_args in (("summary", "unexpected"), ("summary+restart",)):
+            sock = _OutcomeSocket([b"invalid\x00"])
+            with self.subTest(raw_args=raw_args), patch.object(sys, "argv", [
+                "thermal.py", "--retries", "3", "-H", "miner", "raw", *raw_args
+            ]), patch("thermal.socket.socket", return_value=sock) as create, \
+                    patch("thermal.time.sleep") as sleep, redirect_stdout(io.StringIO()), \
+                    redirect_stderr(io.StringIO()) as err:
+                self.assertFalse(thermal.is_retry_safe_command(raw_args[0], raw_args[1] if len(raw_args) > 1 else None))
+                self.assertEqual(thermal.main(), 1)
+                self.assertIn("outcome unknown", err.getvalue().lower())
+                self.assertEqual(create.call_count, 1)
+                self.assertEqual(sock.send_calls, 1)
+                self.assertTrue(sock.closed)
+                sleep.assert_not_called()
+
+    def test_info_only_ack_depends_on_passthrough_operation(self):
+        cases = (
+            (("raw", "ascset", "0,reboot,1"), 1, "outcome unknown"),
+            (("ascset", "0,reboot,1"), 1, "outcome unknown"),
+            (("raw", "ascset", "0,loop,set,160"), 0, None),
+            (("loop", "160"), 0, None),
+        )
+        for arguments, expected_code, message in cases:
+            sock = _OutcomeSocket([b'{"STATUS":[{"STATUS":"I","Msg":"ok"}]}\x00'])
+            with self.subTest(arguments=arguments), patch.object(sys, "argv", [
+                "thermal.py", "--retries", "3", "-H", "miner", *arguments
+            ]), patch("thermal.socket.socket", return_value=sock) as create, \
+                    patch("thermal.time.sleep") as sleep, redirect_stdout(io.StringIO()), \
+                    redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(thermal.main(), expected_code)
+                if message:
+                    self.assertIn(message, err.getvalue().lower())
+                self.assertEqual(create.call_count, 1)
+                self.assertEqual(sock.send_calls, 1)
+                self.assertTrue(sock.closed)
+                sleep.assert_not_called()
+
+    def test_mutation_outcomes_and_no_replay(self):
+        cases = (
+            ("connect", _OutcomeSocket(connect_error=ConnectionRefusedError("refused")),
+             "NOT_SENT", 0),
+            ("send", _OutcomeSocket(send_error=ConnectionResetError("partial send")),
+             "OUTCOME_UNKNOWN", 1),
+            ("empty", _OutcomeSocket([b""]), "OUTCOME_UNKNOWN", 1),
+            ("truncated", _OutcomeSocket([b'{"STATUS":', thermal.socket.timeout()]),
+             "OUTCOME_UNKNOWN", 1),
+            ("missing status", _OutcomeSocket([b'{"result":"unconfirmed"}\x00']),
+             "OUTCOME_UNKNOWN", 1),
+            ("malformed status", _OutcomeSocket([b'{"STATUS":[{}]}\x00']),
+             "OUTCOME_UNKNOWN", 1),
+            ("unknown status", _OutcomeSocket([b'{"STATUS":[{"STATUS":"W"}]}\x00']),
+             "OUTCOME_UNKNOWN", 1),
+            ("success", _OutcomeSocket([b'{"STATUS":[{"STATUS":"S"}]}\x00']),
+             "DEVICE_REPORTED_SUCCESS", 1),
+            ("rejected", _OutcomeSocket([b'{"STATUS":[{"STATUS":"E"}]}\x00']),
+             "DEVICE_REPORTED_FAILURE", 1),
+            ("mixed success and rejection", _OutcomeSocket([
+                b'{"STATUS":[{"STATUS":"S"},{"STATUS":"E"}]}\x00'
+            ]), "DEVICE_REPORTED_FAILURE", 1),
+        )
+        for label, sock, expected, send_calls in cases:
+            with self.subTest(case=label), patch("thermal.socket.socket", return_value=sock) as create, \
+                    patch("thermal.time.sleep") as sleep, redirect_stderr(io.StringIO()):
+                result = thermal.Miner("miner", retries=3).submit_command("ascset", "0,reboot,1")
+                self.assertEqual(result.outcome, getattr(thermal.CommandOutcome, expected))
+                self.assertEqual(create.call_count, 1)
+                self.assertEqual(sock.send_calls, send_calls)
+                self.assertTrue(sock.closed)
+                sleep.assert_not_called()
+
+    def test_cli_distinguishes_not_sent_unknown_and_device_responses(self):
+        cases = (
+            ("connect", _OutcomeSocket(connect_error=ConnectionRefusedError("refused")), 1, "not sent"),
+            ("send", _OutcomeSocket(send_error=ConnectionResetError("partial send")), 1, "outcome unknown"),
+            ("empty", _OutcomeSocket([b""]), 1, "outcome unknown"),
+            ("truncated", _OutcomeSocket([b'{"STATUS":', thermal.socket.timeout()]), 1, "outcome unknown"),
+            ("missing status", _OutcomeSocket([b'{"result":"unconfirmed"}\x00']), 1, "outcome unknown"),
+            ("unknown status", _OutcomeSocket([b'{"STATUS":[{"STATUS":"W"}]}\x00']), 1, "outcome unknown"),
+            ("info only", _OutcomeSocket([b'{"STATUS":[{"STATUS":"I"}]}\x00']), 1, "outcome unknown"),
+            ("success", _OutcomeSocket([b'{"STATUS":[{"STATUS":"S"}]}\x00']), 0, "ok:"),
+            ("rejected", _OutcomeSocket([b'{"STATUS":[{"STATUS":"E","Msg":"denied"}]}\x00']), 1, "denied"),
+            ("mixed success and rejection", _OutcomeSocket([
+                b'{"STATUS":[{"STATUS":"S"},{"STATUS":"E","Msg":"denied"}]}\x00'
+            ]), 1, "denied"),
+        )
+        for label, sock, code, message in cases:
+            with self.subTest(case=label), patch.object(sys, "argv", [
+                "thermal.py", "--retries", "3", "-H", "miner", "reboot"
+            ]), patch("thermal.socket.socket", return_value=sock) as create, \
+                    patch("thermal.time.sleep") as sleep, redirect_stdout(io.StringIO()) as out, \
+                    redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(thermal.main(), code)
+                self.assertIn(message, (out.getvalue() + err.getvalue()).lower())
+                self.assertEqual(create.call_count, 1)
+                self.assertTrue(sock.closed)
+                sleep.assert_not_called()
+
+    def test_submission_jsonl_records_transport_and_device_outcomes(self):
+        cases = (
+            ("connect", _OutcomeSocket(connect_error=ConnectionRefusedError("refused")),
+             "command_error", "not_sent"),
+            ("send", _OutcomeSocket(send_error=ConnectionResetError("partial send")),
+             "command_error", "outcome_unknown"),
+            ("truncated", _OutcomeSocket([b'{"STATUS":', thermal.socket.timeout()]),
+             "command_error", "outcome_unknown"),
+            ("missing status", _OutcomeSocket([b'{"result":"unconfirmed"}\x00']),
+             "command_result", "outcome_unknown"),
+            ("success", _OutcomeSocket([b'{"STATUS":[{"STATUS":"S"}]}\x00']),
+             "command_result", "device_reported_success"),
+            ("rejected", _OutcomeSocket([b'{"STATUS":[{"STATUS":"E"}]}\x00']),
+             "command_result", "device_reported_failure"),
+        )
+        for label, sock, expected_event, expected_outcome in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                log_path = os.path.join(tmpdir, "commands.jsonl")
+                with patch("thermal.socket.socket", return_value=sock) as create, \
+                        patch("thermal.time.sleep") as sleep:
+                    result = thermal.Miner("miner", retries=3, log_jsonl=log_path).submit_command(
+                        "ascset", "0,reboot,1"
+                    )
+                with open(log_path, encoding="utf-8") as handle:
+                    events = [json.loads(line) for line in handle if line.strip()]
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["event"], expected_event)
+                self.assertEqual(events[0]["outcome"], expected_outcome)
+                self.assertEqual(result.outcome.value, expected_outcome)
+                self.assertEqual(events[0]["command"], "ascset")
+                self.assertEqual(events[0]["attempt"], 1)
+                self.assertEqual(create.call_count, 1)
+                sleep.assert_not_called()
+
+
 class ApiFramingTests(unittest.TestCase):
     def test_fragmented_response_stops_at_first_null(self):
         sock = _ScriptedSocket([b'{"STAT', b'US":[]}\x00trailing bytes'])
@@ -173,7 +321,7 @@ class ApiFramingTests(unittest.TestCase):
         self.assertTrue(sock.closed)
 
 
-class _PreflightMiner:
+class _PreflightMiner(StubCommandSubmission):
     executed = []
 
     def __init__(self, host, port=4028, timeout=10, **_kwargs):
@@ -221,6 +369,39 @@ class _PreflightMiner:
 
 
 class PreflightTests(unittest.TestCase):
+    def test_raw_unexpected_parameter_and_compound_command_require_preflight(self):
+        sent = []
+
+        class FleetSocket(_OutcomeSocket):
+            def __init__(self):
+                super().__init__()
+                self.host = None
+
+            def connect(self, addr):
+                self.host = addr[0]
+                if self.host == "offline":
+                    raise ConnectionRefusedError("refused")
+
+            def sendall(self, payload):
+                command = json.loads(payload)
+                sent.append((self.host, command))
+                if command["command"] == "version":
+                    self.chunks = iter([b'{"VERSION":[{"PROD":"Avalon Q"}]}\x00'])
+                else:
+                    self.chunks = iter([b'{"STATUS":[{"STATUS":"S"}]}\x00'])
+
+        for raw_args in (("summary", "unexpected"), ("summary+restart",)):
+            sent.clear()
+            with self.subTest(raw_args=raw_args), patch.object(sys, "argv", [
+                "thermal.py", "--retries", "0", "-H", "good,offline", "raw", *raw_args
+            ]), patch("thermal.socket.socket", side_effect=lambda *_args: FleetSocket()), \
+                    redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+                self.assertEqual(thermal.main(), 1)
+                self.assertIn("[offline]\nskipped: preflight failed", out.getvalue())
+                self.assertEqual([command["command"] for host, command in sent if host == "good"],
+                                 ["version", raw_args[0]])
+                self.assertFalse(any(host == "offline" for host, _ in sent))
+
     def test_preflight_skips_offline_hosts_for_mutating_commands(self):
         _PreflightMiner.executed = []
         out = io.StringIO()
@@ -387,7 +568,7 @@ class FleetResultTests(unittest.TestCase):
             self.assertTrue(thermal.print_json_result({"STATUS": [{"STATUS": "I"}]}))
 
     def test_raw_mutation_and_ascset_require_acknowledgment(self):
-        class Miner:
+        class Miner(StubCommandSubmission):
             def cmd(self, *_args):
                 return {"result": "unconfirmed"}
 
@@ -410,7 +591,7 @@ class FleetResultTests(unittest.TestCase):
             with self.subTest(extra=extra):
                 result = {"STATUS": [{"STATUS": "S", "Msg": "success"}, extra]}
                 with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
-                    self.assertFalse(thermal.check_result(result, "completed"))
+                    self.assertFalse(thermal.check_result(thermal.CommandResult.from_response(result), "completed"))
                     self.assertFalse(thermal._print_info_status(result, "completed"))
                 self.assertNotIn("ok:", out.getvalue())
                 self.assertIn("did not confirm", err.getvalue())
@@ -418,7 +599,8 @@ class FleetResultTests(unittest.TestCase):
     def test_web_auth_does_not_accept_a_later_error_status(self):
         miner = thermal.Miner("miner")
         credentials = {"auth": "a", "verify": "b", "cookie": "c"}
-        with patch.object(miner, "ascset", return_value={"STATUS": [{"STATUS": "S"}, {"STATUS": "E"}]}), \
+        result = thermal.CommandResult.from_response({"STATUS": [{"STATUS": "S"}, {"STATUS": "E"}]})
+        with patch.object(miner, "submit_command", return_value=result), \
                 patch("thermal.urllib.request.urlopen") as request:
             self.assertIsNone(miner.web_auth("test", credentials))
         request.assert_not_called()
@@ -445,7 +627,7 @@ class FleetResultTests(unittest.TestCase):
                 miner.assert_not_called()
 
 
-class _LoggingMiner:
+class _LoggingMiner(StubCommandSubmission):
     def __init__(self, host, port=4028, timeout=10, **_kwargs):
         self.host = host
         self.port = port
@@ -473,6 +655,36 @@ class _LoggingMiner:
 
 
 class LoggingAndSecretsTests(unittest.TestCase):
+    def test_fleet_rejection_echo_does_not_enter_jsonl(self):
+        marker = "synthetic-echo-marker"
+
+        class FleetSocket(_OutcomeSocket):
+            def sendall(self, payload):
+                request = json.loads(payload)
+                if request["command"] == "version":
+                    self.chunks = iter([b'{"VERSION":[{"PROD":"Avalon Q"}]}\x00'])
+                else:
+                    response = {"STATUS": [{"STATUS": "E", "Msg": marker}]}
+                    self.chunks = iter([json.dumps(response).encode() + b"\x00"])
+
+        for arguments in (("raw", "ascset", "0,reboot,1"), ("ascset", "0,reboot,1")):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as tmpdir:
+                log_path = os.path.join(tmpdir, "run.jsonl")
+                with patch.object(sys, "argv", [
+                    "thermal.py", "--log-jsonl", log_path, "-H", "alpha,beta", *arguments
+                ]), patch("thermal.socket.socket", side_effect=lambda *_args: FleetSocket()), \
+                        redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(thermal.main(), 1)
+                self.assertIn(marker, out.getvalue() + err.getvalue())
+                with open(log_path, encoding="utf-8") as handle:
+                    log_text = handle.read()
+                self.assertNotIn(marker, log_text)
+                events = [json.loads(line) for line in log_text.splitlines() if line.strip()]
+                self.assertEqual(sum(event["event"] == "command_result" for event in events), 2)
+                self.assertEqual(sum(event["event"] == "run" for event in events), 2)
+                self.assertTrue(all(event.get("outcome") == "device_reported_failure"
+                                    for event in events if event["event"] == "command_result"))
+
     def test_jsonl_logging_contains_required_keys(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = os.path.join(tmpdir, "run.jsonl")

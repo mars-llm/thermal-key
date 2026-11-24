@@ -5,9 +5,10 @@ import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
 import thermal
+from tests.command_stub import StubCommandSubmission
 
 
-class RecordingMiner:
+class RecordingMiner(StubCommandSubmission):
     def __init__(self, host="192.168.0.10", port=4028, timeout=10, **_kwargs):
         self.host = host
         self.port = port

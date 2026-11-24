@@ -18,6 +18,8 @@ import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 # Work mode name mappings (0=Heater, 1=Mining, 2=Night)
@@ -246,8 +248,14 @@ def _is_read_only_ascset(param: Optional[str]) -> bool:
 def is_retry_safe_command(command: str, param: Optional[str] = None) -> bool:
     normalized = (command or "").strip().lower()
     if normalized in READ_ONLY_COMMANDS:
-        return True
+        return param is None or param == ""
     return normalized == "ascset" and _is_read_only_ascset(param)
+
+
+def _accepts_info_ack(command: str, param: Optional[str]) -> bool:
+    if command != "ascset" or not param:
+        return False
+    return re.fullmatch(r"0,(?:loop,set,-?[0-9]+|qr_auth,[0-9a-f]{8},[0-9a-f]{32})", param) is not None
 
 
 def _parse_ps_fields(text: str) -> Tuple[Optional[int], Optional[int], Optional[int]]:
@@ -487,8 +495,8 @@ def parse_mm_id0(mm: str, temp_keys: Optional[List[str]] = None) -> Dict:
         "filter_value": filter_value,
         "memory_free_kb": memory_free_kb,
         "pf_count": pf_count,
-        "workmode": workmode if workmode is not None else 1,
-        "worklevel": worklevel if worklevel is not None else 0,
+        "workmode": workmode,
+        "worklevel": worklevel,
         "hw_errors": hw_errors,
         "reject_rate": None,
         "device_dh_percent": device_dh_percent if device_dh_percent is not None else 0.0,
@@ -660,8 +668,19 @@ def evaluate_health(stats: Dict, baseline_hashrate: Optional[float] = None) -> D
     }
 
 
+class BaselineState(Enum):
+    CALIBRATING = "calibrating"
+    TRACKING = "tracking"
+    UNCERTAIN = "uncertain"
+
+
 class HealthTracker:
-    """Maintain a mode-aware rolling baseline for live hashrate drift detection."""
+    """Track a baseline, pausing when previously observed mode values disappear.
+
+    A component never observed may be unsupported, but at least one component
+    must be known to establish a baseline. A newly observed component requires
+    a fresh baseline.
+    """
 
     def __init__(
         self,
@@ -673,24 +692,53 @@ class HealthTracker:
         self.mode_signature: Optional[Tuple[Any, Any]] = None
         self.baseline_hashrate: Optional[float] = None
         self.last_uptime: Optional[int] = None
+        self.state = BaselineState.CALIBRATING
 
     def evaluate(self, stats: Dict) -> Dict[str, Any]:
         mode_signature = (stats.get("workmode"), stats.get("worklevel"))
         uptime = _to_int(stats.get("uptime"), None)
         restarted = uptime is not None and self.last_uptime is not None and uptime < self.last_uptime
-        if restarted or (self.mode_signature is not None and mode_signature != self.mode_signature):
+        previous_signature = self.mode_signature
+        changed = previous_signature is not None and any(
+            current is not None and current != previous
+            for previous, current in zip(previous_signature, mode_signature)
+        )
+        if restarted or changed:
             self.samples.clear()
             self.baseline_hashrate = None
-        self.mode_signature = mode_signature
+        if previous_signature is None:
+            self.mode_signature = mode_signature
+        else:
+            self.mode_signature = tuple(
+                current if current is not None else previous
+                for previous, current in zip(previous_signature, mode_signature)
+            )
         if uptime is not None:
             self.last_uptime = uptime
+
+        if not any(value is not None for value in mode_signature) or (
+            previous_signature is not None and any(
+                previous is not None and current is None
+                for previous, current in zip(previous_signature, mode_signature)
+            )
+        ):
+            self.state = BaselineState.UNCERTAIN
+            health = evaluate_health(stats)
+            health["baseline_state"] = self.state.value
+            health["missing_metrics"].append("baseline_context")
+            health["score"] = None
+            if health["status"] == "OK":
+                health["status"] = "UNKNOWN"
+            return health
 
         if len(self.samples) >= self.minimum_samples:
             candidate = float(statistics.median(self.samples))
             if self.baseline_hashrate is None or candidate > self.baseline_hashrate:
                 self.baseline_hashrate = candidate
 
+        self.state = BaselineState.TRACKING if self.baseline_hashrate is not None else BaselineState.CALIBRATING
         health = evaluate_health(stats, baseline_hashrate=self.baseline_hashrate)
+        health["baseline_state"] = self.state.value
         current_hashrate = _to_float(stats.get("hashrate"), None)
         if current_hashrate is not None and current_hashrate > 0:
             if (
@@ -719,6 +767,7 @@ def append_health_event(
             "missing_metrics": health["missing_metrics"],
             "issue_codes": [issue["code"] for issue in health["issues"]],
             "baseline_hashrate": health.get("baseline_hashrate"),
+            **({"baseline_state": health["baseline_state"]} if "baseline_state" in health else {}),
             "hashrate_drop_pct": health.get("hashrate_drop_pct"),
             "thermal_headroom": health.get("thermal_headroom"),
             "hashrate": stats.get("hashrate"),
@@ -732,6 +781,50 @@ def append_health_event(
             "net_failures_total": stats.get("net_failures_total"),
         },
     )
+
+
+class CommandOutcome(Enum):
+    NOT_SENT = "not_sent"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+    DEVICE_REPORTED_SUCCESS = "device_reported_success"
+    DEVICE_REPORTED_FAILURE = "device_reported_failure"
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    outcome: CommandOutcome
+    response: Optional[Dict] = None
+    detail: str = ""
+
+    @classmethod
+    def from_response(cls, response: Dict, *, accept_info: bool = False):
+        statuses = response.get("STATUS") if isinstance(response, dict) else None
+        if isinstance(statuses, list):
+            for row in statuses:
+                if isinstance(row, dict) and row.get("STATUS") in ("E", "F"):
+                    message = row.get("Msg")
+                    return cls(CommandOutcome.DEVICE_REPORTED_FAILURE, response,
+                               message if isinstance(message, str) and message else "device reported failure")
+            if _valid_response_status(response, required=True) and (accept_info or statuses[0]["STATUS"] == "S"):
+                return cls(CommandOutcome.DEVICE_REPORTED_SUCCESS, response)
+        return cls(CommandOutcome.OUTCOME_UNKNOWN, response, "no valid command acknowledgement")
+
+    @property
+    def failure_message(self) -> Optional[str]:
+        if self.outcome is CommandOutcome.NOT_SENT:
+            return f"command not sent: {self.detail}"
+        if self.outcome is CommandOutcome.OUTCOME_UNKNOWN:
+            return f"command outcome unknown: {self.detail}; check the device before trying again"
+        if self.outcome is CommandOutcome.DEVICE_REPORTED_FAILURE:
+            return self.detail
+        return None
+
+
+class _ExchangeError(Exception):
+    def __init__(self, outcome: CommandOutcome, message: str, retryable: bool):
+        super().__init__(message)
+        self.outcome = outcome
+        self.retryable = retryable
 
 
 class Miner:
@@ -779,92 +872,105 @@ class Miner:
             },
         )
 
-    def cmd(self, command: str, param: Optional[str] = None) -> Optional[Dict]:
-        """Send command to CGMiner API."""
-        retry_safe = is_retry_safe_command(command, param)
-        max_attempts = self.retries + 1 if retry_safe else 1
-        last_error = ""
+    def _exchange_once(self, command: str, param: Optional[str]) -> Dict:
+        outcome_on_error = CommandOutcome.NOT_SENT
+        sock = None
+        try:
+            deadline = time.monotonic() + self.timeout
+            payload = {"command": command}
+            if param:
+                payload["parameter"] = param
+            encoded = json.dumps(payload).encode()
 
-        for attempt in range(1, max_attempts + 1):
-            sock = None
-            retry_delay = None
-            try:
-                deadline = time.monotonic() + self.timeout
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(self.timeout)
-                sock.connect((self.host, self.port))
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.timeout)
+            sock.connect((self.host, self.port))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("command deadline exceeded")
+            sock.settimeout(remaining)
+            # sendall may raise after transmitting part or all of the command.
+            outcome_on_error = CommandOutcome.OUTCOME_UNKNOWN
+            sock.sendall(encoded)
 
-                payload = {"command": command}
-                if param:
-                    payload["parameter"] = param
-
+            response = bytearray()
+            while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise socket.timeout("command deadline exceeded")
+                    raise socket.timeout("response deadline exceeded")
                 sock.settimeout(remaining)
-                sock.sendall(json.dumps(payload).encode())
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                frame, separator, _ = chunk.partition(b"\x00")
+                response.extend(frame)
+                if len(response) > MAX_API_RESPONSE_BYTES:
+                    raise ValueError("response exceeds size limit")
+                if separator:
+                    break
+            parsed = json.loads(response.decode())
+            if not isinstance(parsed, dict):
+                raise ValueError("response is not a JSON object")
+            return parsed
+        except Exception as exc:
+            if isinstance(exc, ConnectionRefusedError):
+                message = f"connection refused ({self.host}:{self.port})"
+            elif isinstance(exc, socket.timeout):
+                message = "connection timeout"
+            elif isinstance(exc, ConnectionResetError):
+                message = "connection reset"
+            elif isinstance(exc, socket.gaierror):
+                message = f"name resolution failed ({self.host})"
+            elif isinstance(exc, ValueError):
+                message = "invalid response"
+            else:
+                message = str(exc) or type(exc).__name__
+            raise _ExchangeError(outcome_on_error, message, isinstance(exc, (OSError, ValueError))) from exc
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
 
-                response = bytearray()
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise socket.timeout("response deadline exceeded")
-                    sock.settimeout(remaining)
-                    try:
-                        chunk = sock.recv(4096)
-                        if not chunk:
-                            break
-                        frame, separator, _ = chunk.partition(b"\x00")
-                        response.extend(frame)
-                        if len(response) > MAX_API_RESPONSE_BYTES:
-                            raise ValueError("response exceeds size limit")
-                        if separator:
-                            break
-                    except socket.timeout:
-                        break
+    def submit_command(self, command: str, param: Optional[str] = None) -> CommandResult:
+        """Submit once. A device acknowledgement does not verify the resulting physical state."""
+        try:
+            response = self._exchange_once(command, param)
+        except _ExchangeError as exc:
+            result = CommandResult(exc.outcome, detail=str(exc))
+            self._log_cmd_event("command_error", command, 1, error=str(exc), outcome=result.outcome.value)
+        else:
+            result = CommandResult.from_response(response, accept_info=_accepts_info_ack(command, param))
+            self._log_cmd_event("command_result", command, 1, outcome=result.outcome.value)
+        return result
 
-                parsed = json.loads(response.decode())
-                if not isinstance(parsed, dict):
-                    raise ValueError("response is not a JSON object")
+    def cmd(self, command: str, param: Optional[str] = None) -> Optional[Dict]:
+        """Return the wire response, retrying only explicitly allowlisted reads."""
+        if not is_retry_safe_command(command, param):
+            result = self.submit_command(command, param)
+            if result.response is None and result.failure_message:
+                print_err(result.failure_message)
+            return result.response
+
+        for attempt in range(1, self.retries + 2):
+            try:
+                response = self._exchange_once(command, param)
+            except _ExchangeError as exc:
+                if not exc.retryable or attempt > self.retries:
+                    print_err(str(exc))
+                    self._log_cmd_event("command_error", command, attempt, error=str(exc))
+                    return None
+                delay = self._retry_delay_seconds(attempt - 1)
+                self._log_cmd_event("retry", command, attempt, error=str(exc), delay_ms=int(delay * 1000))
+                time.sleep(delay)
+            else:
                 if attempt > 1:
                     self._log_cmd_event("retry_success", command, attempt)
-                return parsed
-
-            except (OSError, UnicodeDecodeError, ValueError) as exc:
-                if isinstance(exc, ConnectionRefusedError):
-                    last_error = f"connection refused ({self.host}:{self.port})"
-                elif isinstance(exc, socket.timeout):
-                    last_error = "connection timeout"
-                elif isinstance(exc, ConnectionResetError):
-                    last_error = "connection reset"
-                elif isinstance(exc, socket.gaierror):
-                    last_error = f"name resolution failed ({self.host})"
-                elif isinstance(exc, (UnicodeDecodeError, ValueError)):
-                    last_error = "invalid response"
-                else:
-                    last_error = str(exc) or exc.__class__.__name__
-
-                if attempt < max_attempts:
-                    retry_delay = self._retry_delay_seconds(attempt - 1)
-                    self._log_cmd_event("retry", command, attempt, error=last_error, delay_ms=int(retry_delay * 1000))
-                else:
-                    print(f"error: {last_error}", file=sys.stderr)
-            except Exception as exc:
-                last_error = str(exc)
-                print(f"error: {last_error}", file=sys.stderr)
-            finally:
-                if sock is not None:
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-            if retry_delay is not None:
-                time.sleep(retry_delay)
-                continue
-            break
-
-        self._log_cmd_event("command_error", command, max_attempts, error=last_error or "unknown")
-        return None
+                return response
 
     def ascset(self, param: str) -> Optional[Dict]:
         return self.cmd("ascset", param)
@@ -1022,9 +1128,11 @@ class Miner:
     def web_auth(self, password: str, creds: Optional[Dict[str, str]] = None) -> Optional[str]:
         """Authenticate and return session cookie."""
         creds = creds or self.compute_auth(password)
-        auth_result = self.ascset(f"0,qr_auth,{creds['auth']},{creds['verify']}")
-        auth_status = _first_dict_entry(auth_result, "STATUS")
-        if not auth_status or not _valid_response_status(auth_result, required=True):
+        auth_result = self.submit_command("ascset", f"0,qr_auth,{creds['auth']},{creds['verify']}")
+        if auth_result.outcome is not CommandOutcome.DEVICE_REPORTED_SUCCESS:
+            # Firmware rejection messages may echo the submitted auth parameters.
+            if auth_result.outcome is not CommandOutcome.DEVICE_REPORTED_FAILURE:
+                print_err(auth_result.failure_message)
             return None
         try:
             resp = urllib.request.urlopen(f"http://{self.host}/is_login.cgi", timeout=5).read().decode()
@@ -1074,16 +1182,13 @@ def print_err(msg: str):
     print(f"error: {msg}", file=sys.stderr)
 
 
-def check_result(result: Optional[Dict], ok_msg: str) -> bool:
-    status = _first_dict_entry(result, "STATUS")
-    if not status:
-        print_err("no response")
+def check_result(result: CommandResult, ok_msg: str = "") -> bool:
+    if result.failure_message is not None:
+        print_err(result.failure_message)
         return False
-    if status.get("STATUS") == "S" and _valid_response_status(result, required=True):
+    if ok_msg:
         print_ok(ok_msg)
-        return True
-    print_err(_failure_status_msg(result))
-    return False
+    return True
 
 
 # Commands
@@ -1257,6 +1362,7 @@ def do_watch(m: Miner, args):
                 line = (
                     f"[{timestamp}] {hashrate} | {temp} | Fan {fan} | {power} | "
                     f"Mode {mode} | Health {health['status']} {fmt_unknown(health['score'])} | "
+                    f"Baseline {health['baseline_state']} | "
                     f"Up {fmt_uptime(stats.get('uptime'))}"
                 )
                 print("\r" + line.ljust(previous_line_width), end='', flush=True)
@@ -1277,7 +1383,7 @@ def do_watch(m: Miner, args):
 
 
 def do_reboot(m: Miner, args):
-    return check_result(m.ascset("0,reboot,1"), "rebooting")
+    return check_result(m.submit_command("ascset", "0,reboot,1"), "rebooting")
 
 
 def do_fan(m: Miner, args):
@@ -1290,29 +1396,29 @@ def do_fan(m: Miner, args):
         print_err("fan speed must be 15-100 or 'auto'")
         return False
     msg = "fan set to auto" if speed == -1 else f"fan set to {speed}%"
-    return check_result(m.ascset(f"0,fan-spd,{speed}"), msg)
+    return check_result(m.submit_command("ascset", f"0,fan-spd,{speed}"), msg)
 
 
 def do_freq(m: Miner, args):
     # Frequency format: pll0:pll1:pll2:pll3 (set all 4 PLLs to same value)
     f = args.freq
-    return check_result(m.ascset(f"0,frequency,{f}:{f}:{f}:{f}"), f"frequency set to {f} MHz")
+    return check_result(m.submit_command("ascset", f"0,frequency,{f}:{f}:{f}:{f}"), f"frequency set to {f} MHz")
 
 
 def do_mode(m: Miner, args):
     ver = _first_dict_entry(m.cmd("version"), "VERSION") or {}
     key = device_key_from_product(ver.get("PROD") or ver.get("MODEL") or ver.get("Model"))
     label = mode_name(args.mode, key) if key != "unknown" else str(args.mode)
-    return check_result(m.ascset(f"0,workmode,set,{args.mode}"), f"mode set to {label}")
+    return check_result(m.submit_command("ascset", f"0,workmode,set,{args.mode}"), f"mode set to {label}")
 
 
 def do_level(m: Miner, args):
-    return check_result(m.ascset(f"0,worklevel,set,{args.level}"), f"level set to {args.level}")
+    return check_result(m.submit_command("ascset", f"0,worklevel,set,{args.level}"), f"level set to {args.level}")
 
 
 def do_work_mode_level(m: Miner, args):
     return check_result(
-        m.ascset(f"0,work_mode_lvl,set,{args.mode},{args.level}"),
+        m.submit_command("ascset", f"0,work_mode_lvl,set,{args.mode},{args.level}"),
         f"mode set to {mode_name(args.mode, 'q')} (level {args.level})",
     )
 
@@ -1321,7 +1427,7 @@ def do_voltage(m: Miner, args):
     if not 2150 <= args.mv <= 2600:
         print_err("voltage must be in range 2150-2600 mV")
         return False
-    return check_result(m.ascset(f"0,voltage,{args.mv}"), f"voltage set to {args.mv} mV")
+    return check_result(m.submit_command("ascset", f"0,voltage,{args.mv}"), f"voltage set to {args.mv} mV")
 
 
 def do_solo_allowed(m: Miner, args):
@@ -1333,7 +1439,7 @@ def do_solo_allowed(m: Miner, args):
     else:
         print_err("solo must be 0/1 (or off/on)")
         return False
-    return check_result(m.ascset(f"0,solo-allowed,{value}"), f"solo-allowed set to {value}")
+    return check_result(m.submit_command("ascset", f"0,solo-allowed,{value}"), f"solo-allowed set to {value}")
 
 
 def do_qinfo(m: Miner, args):
@@ -1399,11 +1505,11 @@ def do_loop(m: Miner, args):
         text = f"loop {loop}" if loop is not None else msg.replace("ASC 0 set info: ", "")
         return _print_info_status(result, text)
 
-    result = m.ascset(f"0,loop,set,{args.value}")
-    msg = _status_msg(result)
+    result = m.submit_command("ascset", f"0,loop,set,{args.value}")
+    msg = _status_msg(result.response)
     loop = _extract_loop_value(msg)
     text = f"loop set to {loop}" if loop is not None else f"loop set request sent ({args.value})"
-    return _print_info_status(result, text)
+    return check_result(result, text)
 
 
 def do_timezone(m: Miner, args):
@@ -1413,15 +1519,15 @@ def do_timezone(m: Miner, args):
 
 
 def do_switchpool(m: Miner, args):
-    return check_result(m.cmd("switchpool", str(args.id)), f"switched to pool {args.id}")
+    return check_result(m.submit_command("switchpool", str(args.id)), f"switched to pool {args.id}")
 
 
 def do_enablepool(m: Miner, args):
-    return check_result(m.cmd("enablepool", str(args.id)), f"pool {args.id} enabled")
+    return check_result(m.submit_command("enablepool", str(args.id)), f"pool {args.id} enabled")
 
 
 def do_disablepool(m: Miner, args):
-    return check_result(m.cmd("disablepool", str(args.id)), f"pool {args.id} disabled")
+    return check_result(m.submit_command("disablepool", str(args.id)), f"pool {args.id} disabled")
 
 
 def do_auth(m: Miner, args):
@@ -1482,12 +1588,22 @@ def print_json_result(result: Optional[Dict], require_status: bool = False) -> b
         return False
 
 
+def print_submission(result: CommandResult) -> bool:
+    if result.response is not None:
+        print(json.dumps(result.response, indent=2))
+    return check_result(result)
+
+
 def do_raw(m: Miner, args):
-    return print_json_result(m.cmd(args.command, args.param), require_status=not is_retry_safe_command(args.command, args.param))
+    if is_retry_safe_command(args.command, args.param):
+        return print_json_result(m.cmd(args.command, args.param))
+    return print_submission(m.submit_command(args.command, args.param))
 
 
 def do_ascset(m: Miner, args):
-    return print_json_result(m.ascset(args.param), require_status=True)
+    if _is_read_only_ascset(args.param):
+        return print_json_result(m.ascset(args.param), require_status=True)
+    return print_submission(m.submit_command("ascset", args.param))
 
 
 def do_help_ascset(m: Miner, args):
@@ -1813,8 +1929,8 @@ Fleet management (multiple hosts):
         errors = err.getvalue()
         failed = succeeded is False
         if failed:
-            message = errors.strip().splitlines()[-1] if errors.strip() else "command reported failure"
-            log_run_event(host, "failed", message)
+            # Device error text can echo the parameters, including auth values.
+            log_run_event(host, "failed", "command did not complete successfully")
         else:
             log_run_event(host, "ok", "command completed")
         return f"[{host}]\n{result}{errors}", not failed

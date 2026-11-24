@@ -8,6 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 import thermal
+from tests.command_stub import StubCommandSubmission
 
 
 def _make_mm(
@@ -47,7 +48,7 @@ def _make_mm(
     return " ".join(parts)
 
 
-class FakeMiner:
+class FakeMiner(StubCommandSubmission):
     def __init__(self, host, port=4028, timeout=10, **_kwargs):
         self.host = host
         self.port = port

@@ -126,7 +126,7 @@ Use these global flags with any command:
 
 For mutating multi-host commands, Thermal Key runs a `version` preflight by default and skips hosts that do not respond successfully. This checks connectivity, not whether a setting is safe or supported.
 Use `--no-preflight` to disable this behavior.
-Mutating commands are not automatically replayed after an ambiguous network failure.
+Thermal Key attempts each mutating command only once per target, regardless of `--retries`. If the CLI reports `command not sent`, transmission never started. If it reports `command outcome unknown`, the miner may already have acted: check its state before trying again. A success reply is the miner's acknowledgement, not an independent check of the setting.
 
 Repeated host entries are executed only once.
 Exit code `1` means at least one target failed, was skipped by preflight, or returned no status metrics.
@@ -134,7 +134,7 @@ Health warnings alone do not change the exit code.
 
 Health requires valid readings for hashrate, reject rate, hardware errors, temperature, fan RPM and error status, Wi-Fi signal, pool latency, and network failures. Missing or invalid readings produce an `UNKNOWN` status unless an observed warning or critical condition takes precedence. In either case, an incomplete assessment has no numeric score. `status` lists missing signals; health JSONL events include `missing_metrics` and a null `health_score`. Devices that do not expose every signal may therefore remain `UNKNOWN` even while mining normally.
 
-Hashrate drift needs a baseline. `watch` learns one from at least three positive samples and resets it after a mode change or detected reboot; a single `status` reading does not assess drift.
+Hashrate drift needs a baseline. `watch` shows `calibrating` while learning from at least three positive samples, then `tracking`. If a previously reported mode or level disappears, it shows `uncertain` and neither learns from nor compares that sample. Tracking resumes when the same settings return; a changed setting or detected reboot requires fresh samples. A single `status` reading does not assess drift.
 
 ## Fleet workflows
 
