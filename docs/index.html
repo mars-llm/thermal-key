@@ -15,18 +15,15 @@
   <meta property="og:description" content="Local-first CLI for monitoring, automation, and fleet management. No cloud. No vendor app." />
   <meta property="og:url" content="https://mars-llm.github.io/thermal-key/" />
   <meta property="og:image" content="https://mars-llm.github.io/thermal-key/img/thermal-key.png" />
-  <meta property="og:image:width" content="1200" />
-  <meta property="og:image:height" content="630" />
+  <meta property="og:image:width" content="1936" />
+  <meta property="og:image:height" content="1008" />
 
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Thermal Key - Local control for Avalon Mini 3, Nano 3S, and Avalon Q" />
   <meta name="twitter:description" content="Local-first CLI for monitoring, automation, and fleet management. No cloud. No vendor app." />
   <meta name="twitter:image" content="https://mars-llm.github.io/thermal-key/img/thermal-key.png" />
-  <meta name="theme-color" content="#2563eb" />
-
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <meta name="theme-color" content="#101c24" />
+  <link rel="icon" type="image/svg+xml" href="img/favicon.svg" />
 
   <style>
     :root {
@@ -489,12 +486,63 @@
         opacity: 1 !important;
       }
     }
+
+    /* Keep the original miner artwork and live console capture as the focus. */
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f6f5;
+    }
+    body::before { display: none; }
+    header { max-width: 1180px; padding: 20px 24px; }
+    .brand-title span { letter-spacing: .12em; }
+    .brand-title strong { font-size: 14px; }
+    nav a { min-height: 44px; display: inline-flex; align-items: center; }
+    main { max-width: none; display: block; padding: 0 0 72px; }
+    .hero {
+      width: 100%; min-height: 510px; grid-template-columns: minmax(0, 440px) minmax(0, 680px);
+      justify-content: center; gap: 42px; padding: 70px 24px;
+      color: #f8fafc; background: #101c24; border: 0; border-radius: 0; box-shadow: none;
+    }
+    .hero h1 { font-size: clamp(44px, 6vw, 76px); letter-spacing: -.055em; line-height: 1; }
+    .hero p { color: #d5e0e4; max-width: 42ch; }
+    .hero .eyebrow { color: #ffb362; font-size: 12px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 18px; }
+    .hero .hero-lead { color: #fff; font-size: clamp(21px, 2.4vw, 28px); line-height: 1.25; font-weight: 650; letter-spacing: -.025em; margin-bottom: 14px; }
+    .hero .button:not(.primary) { color: #f8fafc; background: transparent; border-color: #7a8b92; }
+    .hero .button:not(.primary):hover { background: rgba(255,255,255,.1); }
+    .hero-card { padding: 0; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+    .hero-card img { border-radius: 0; image-rendering: pixelated; }
+    .stat-grid, .section, .console-section { width: min(1120px, calc(100% - 48px)); margin: 0 auto; }
+    .stat-grid { gap: 0; border-bottom: 1px solid #cbd4d5; }
+    .stat { background: transparent; border: 0; border-radius: 0; padding: 28px 24px 28px 0; }
+    .stat strong { font-size: 17px; }
+    .stat span, .console-caption { color: #47565c; line-height: 1.55; }
+    .section { padding: 52px 0; border: 0; border-top: 1px solid #cbd4d5; border-radius: 0; box-shadow: none; background: transparent; }
+    .section h2, .console-section h2 { font-size: clamp(27px, 3vw, 37px); letter-spacing: -.035em; }
+    .feature-grid { gap: 0 28px; }
+    .feature { border: 0; border-top: 1px solid #cbd4d5; border-radius: 0; background: transparent; min-height: 0; padding: 20px 0 25px; }
+    .compare, .command { border-radius: 4px; box-shadow: none; }
+    .console-section { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(0, 1.2fr); gap: 40px; align-items: center; padding: 60px 0; }
+    .console-section h2 { margin: 0 0 12px; }
+    .console-section figure { margin: 0; }
+    .console-section img { display: block; width: 100%; height: auto; border-radius: 4px; }
+    .console-section figcaption { color: #59686e; font-size: 13px; margin-top: 10px; }
+    .code, .command code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    @media (max-width: 760px) {
+      header { padding: 16px 18px; }
+      .hero { min-height: 0; grid-template-columns: 1fr; gap: 24px; padding: 48px 20px 32px; }
+      .hero-card { max-width: 600px; }
+      .stat-grid, .section, .console-section { width: calc(100% - 36px); }
+      .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat { padding: 20px 16px 20px 0; }
+      .console-section { grid-template-columns: 1fr; gap: 20px; padding: 42px 0; }
+      .section { padding: 42px 0; }
+    }
+    @media (max-width: 360px) { .stat-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
     <div class="brand">
-      <img src="img/thermal-key.png" alt="Thermal Key logo" />
       <div class="brand-title">
         <span>Thermal Key</span>
         <strong>Local-first mining control</strong>
@@ -514,22 +562,29 @@
   <main>
     <section class="hero">
       <div>
-        <div class="pill-row">
-          <span class="pill">100% Local</span>
-          <span class="pill">Fleet Ready</span>
-          <span class="pill">Mini 3 + Nano 3S</span>
-          <span class="pill">Avalon Q Supported</span>
-        </div>
-        <h1>Control your miners without cloud lock-in.</h1>
-        <p>Thermal Key is a CLI toolkit for monitoring, automation, and fleet management. It speaks directly to your Avalon miners so you can manage everything from any terminal on your LAN.</p>
+        <p class="eyebrow">Local-first miner control</p>
+        <h1>Thermal Key</h1>
+        <p class="hero-lead">Your Avalon miners. Your terminal.</p>
+        <p>Monitor and manage the Mini 3, Nano 3S, and Avalon Q directly on your network.</p>
         <div class="cta">
           <a class="button primary" href="https://github.com/mars-llm/thermal-key">Get the CLI</a>
           <a class="button" href="#quickstart">Quick start</a>
         </div>
       </div>
       <div class="hero-card">
-        <img src="img/console.png" alt="Thermal Key CLI status view" />
+        <img src="img/thermal-key.png" alt="Pixel art of a flaming key and mining hardware" width="1936" height="1008" />
       </div>
+    </section>
+
+    <section class="console-section" aria-labelledby="console-title">
+      <div>
+        <h2 id="console-title">A clear view of your miner.</h2>
+        <p class="console-caption">Check hashrate, temperature, fan speed and power from a terminal on your local network.</p>
+      </div>
+      <figure>
+        <img src="img/console.png" alt="Example terminal output showing a Nano 3S status" width="680" height="456" loading="lazy" />
+        <figcaption>Example output from a Nano 3S.</figcaption>
+      </figure>
     </section>
 
     <section class="stat-grid">

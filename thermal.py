@@ -250,15 +250,17 @@ def is_retry_safe_command(command: str, param: Optional[str] = None) -> bool:
     return normalized == "ascset" and _is_read_only_ascset(param)
 
 
-def _extract_ps_values(msg: str) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-    """Extract (power_in, voltage, power_out) from a PS[...] status message."""
-    match = re.search(r"PS\[([^\]]+)\]", msg)
-    if not match:
-        return None, None, None
-    values = [_parse_optional_int(p) for p in re.findall(r"-?\d+(?:\.\d+)?", match.group(1))]
+def _parse_ps_fields(text: str) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    values = [_parse_optional_int(part) for part in text.split()]
     if len(values) > 4:
         return values[1], values[2], values[4]
     return None, None, None
+
+
+def _extract_ps_values(msg: str) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Extract (power_in, voltage, power_out) from a PS[...] status message."""
+    match = re.search(r"PS\[([^\]]+)\]", msg)
+    return _parse_ps_fields(match.group(1)) if match else (None, None, None)
 
 
 def _extract_loop_value(msg: str) -> Optional[int]:
@@ -387,9 +389,7 @@ def parse_mm_id0(mm: str, temp_keys: Optional[List[str]] = None) -> Dict:
     power_out: Optional[int] = None
     ps = get_field("PS")
     if ps:
-        parts = [_parse_optional_int(p) for p in re.findall(r"-?\d+(?:\.\d+)?", ps)]
-        if len(parts) > 4 and parts[1] is not None and parts[4] is not None:
-            power_in, power_out = parts[1], parts[4]
+        power_in, _, power_out = _parse_ps_fields(ps)
 
     # Get SF0 base frequency (actual set value) - SF0[600 618 639 660]
     freq: Optional[int] = None

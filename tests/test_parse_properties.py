@@ -24,6 +24,20 @@ class ParseMini3Properties(unittest.TestCase):
         self.assertEqual(stats["power_in"], 1200)
         self.assertEqual(stats["power_out"], 730)
 
+    def test_malformed_ps_field_never_shifts_other_measurements(self):
+        for index in range(5):
+            fields = ["0", "1200", "2150", "33", "730", "2151", "810"]
+            fields[index] = "invalid"
+            message = "PS[" + " ".join(fields) + "]"
+            with self.subTest(index=index):
+                power_in, voltage, power_out = thermal._extract_ps_values(message)
+                stats = thermal.parse_mm_id0(message)
+                self.assertEqual(power_in, None if index == 1 else 1200)
+                self.assertEqual(voltage, None if index == 2 else 2150)
+                self.assertEqual(power_out, None if index == 4 else 730)
+                self.assertEqual(stats["power_in"], power_in)
+                self.assertEqual(stats["power_out"], power_out)
+
     def test_out_of_range_numeric_payloads_do_not_crash(self):
         huge = "9" * 400
         stats = thermal.parse_mm_id0(f"Fan1[{huge}] Freq[{huge}] GHSavg[{huge}]")
